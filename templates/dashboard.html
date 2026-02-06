@@ -30,6 +30,12 @@
       display:flex; align-items:center; justify-content:space-between; gap:12px;
       position: sticky; top: 0; z-index: 5; border-bottom: 1px solid var(--border);
     }
+    .header-right { display:flex; align-items:center; gap:12px; flex-wrap: wrap; }
+    .symbols { display:flex; gap:6px; flex-wrap: wrap; align-items:center; max-width: 520px; }
+    .sym { display:flex; align-items:center; gap:6px; padding:4px 8px; border-radius:999px; background:#111827; border:1px solid var(--border); font-size:12px; }
+    .sym .dot { width:8px; height:8px; border-radius:50%; }
+    .sym.active .dot { background:#22c55e; box-shadow: 0 0 8px #22c55e; }
+    .sym.inactive .dot { background:#ef4444; box-shadow: 0 0 8px #ef4444; }
     .brand { display:flex; align-items:center; gap:12px; }
     .dot { width:10px; height:10px; border-radius:50%; background: var(--accent); box-shadow: 0 0 12px var(--accent); }
     .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap:16px; padding:16px; }
@@ -69,12 +75,15 @@
       <div class="muted" id="now"></div>
     </div>
   </div>
-  <div>
-    <button onclick="control('start')">Démarrer</button>
-    <button class="secondary" onclick="control('stop')">Stop</button>
-    <button class="secondary" onclick="control('restart')">Redémarrer</button>
-    <button class="secondary" onclick="refresh()">Actualiser</button>
-    <button class="warn" onclick="purgeLogs()">Purger logs</button>
+  <div class="header-right">
+    <div class="symbols" id="symbols"></div>
+    <div>
+      <button onclick="control('start')">Démarrer</button>
+      <button class="secondary" onclick="control('stop')">Stop</button>
+      <button class="secondary" onclick="control('restart')">Redémarrer</button>
+      <button class="secondary" onclick="refresh()">Actualiser</button>
+      <button class="warn" onclick="purgeLogs()">Purger logs</button>
+    </div>
   </div>
 </header>
 
@@ -94,6 +103,10 @@
   <div class="card">
     <h3>Logs lanceur</h3>
     <div class="scroll"><pre id="logs">Chargement...</pre></div>
+  </div>
+  <div class="card">
+    <h3>Volume payload IA</h3>
+    <div class="scroll"><pre id="payload">Chargement...</pre></div>
   </div>
 </div>
 
@@ -179,9 +192,17 @@ async function refresh() {
     document.getElementById('logs').textContent = 'Erreur logs: ' + e;
   }
 
+  try {
+    const payloadResp = await fetchJson('/api/payload-volume?limit=200');
+    document.getElementById('payload').textContent = (payloadResp.data.lines || []).join('\n');
+  } catch (e) {
+    document.getElementById('payload').textContent = 'Erreur payload: ' + e;
+  }
+
   stickToBottom(document.getElementById('ai'));
   stickToBottom(document.getElementById('journal'));
   stickToBottom(document.getElementById('logs'));
+  stickToBottom(document.getElementById('payload'));
 
   try {
     const marketsResp = await fetchJson('/api/markets');
@@ -201,6 +222,19 @@ async function refresh() {
     document.getElementById('markets').innerHTML = rows || '<tr><td colspan="6">Aucune donnée</td></tr>';
   } catch (e) {
     document.getElementById('markets').innerHTML = `<tr><td colspan="6">Erreur marchés: ${e}</td></tr>`;
+  }
+
+  try {
+    const symResp = await fetchJson('/api/symbols');
+    const symbols = symResp.data.symbols || [];
+    const html = symbols.map(s => {
+      const cls = s.enabled ? 'active' : 'inactive';
+      const label = s.enabled ? 'actif' : 'inactif';
+      return `<span class="sym ${cls}"><span class="dot"></span>${s.symbol} <span class="muted">${label}</span></span>`;
+    }).join('');
+    document.getElementById('symbols').innerHTML = html || '<span class="muted">Aucun symbole</span>';
+  } catch (e) {
+    document.getElementById('symbols').innerHTML = '<span class="muted">Symbols indisponibles</span>';
   }
 
   try {

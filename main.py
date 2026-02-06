@@ -53,7 +53,7 @@ def parse_arguments():
     
     parser.add_argument('--capital',
                        type=float,
-                       help='Capital initial ($) (défaut: $1000)')
+                       help='Capital initial (optionnel, ignoré en mode réel)')
     
     return parser.parse_args()
     
@@ -134,12 +134,8 @@ def initialize_trading_system(mode: str, strategy: str, risk: float, capital: fl
             config.INTELLIGENT_EXIT_ENABLED = False
             logger.warning("⚠️  Système de sortie intelligente désactivé")
         
-        # Capital personnalisé
-        if capital:
-            config.INITIAL_CAPITAL = capital
-            logger.info(f"💰 Capital personnalisé: ${capital:.2f}")
-        else:
-            config.INITIAL_CAPITAL = 1000.0  # Valeur par défaut
+        # Capital manuel ignoré en mode réel (utilise le solde MT5)
+        config.INITIAL_CAPITAL = 1000.0  # Valeur par défaut (info interne)
         
         # ✅ CONNEXION MT5 RÉELLE (obligatoire)
         logger.info("🔗 Tentative de connexion MT5 RÉELLE...")
@@ -301,7 +297,7 @@ def main():
         logger.info(f"⚡ Risk/Trade: {args.risk}%")
         logger.info(f"🧠 Sortie intelligente: {'✅ ACTIVÉE' if intelligent_exit_enabled else '❌ DÉSACTIVÉE'}")
         logger.info(f"🤖 IA Engine: {'✅ ACTIVÉ' if args.ai_engine else '❌ DÉSACTIVÉ'}")
-        logger.info(f"💰 Capital: ${args.capital if args.capital else 1000:.2f}")
+        logger.info("💰 Capital: solde MT5 réel")
         logger.info("=" * 60)
         logger.info(f"🐍 Python: {sys.version.split()[0]}")
         logger.info(f"📁 Répertoire: {os.getcwd()}")
@@ -346,7 +342,7 @@ def main():
         logger.info("=" * 60)
         logger.info("✅ SYSTÈME COMPLET INITIALISÉ AVEC SUCCÈS!")
         logger.info("=" * 60)
-        logger.info(f"💰 Capital: ${config.INITIAL_CAPITAL:.2f}")
+        logger.info("💰 Capital: solde MT5 réel")
         logger.info(f"⚡ Risk/Trade: {config.RISK_PER_TRADE}%")
         logger.info(f"📈 Stratégie: {args.strategy}")
         logger.info(f"🎯 Mode: {args.mode}")

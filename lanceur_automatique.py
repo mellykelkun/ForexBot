@@ -167,10 +167,10 @@ class MemoryManager:
         """Détermine si un cleanup est nécessaire - SEUILS AGGRESSIFS"""
         memory_usage = self.cleaner.get_memory_usage()
         
-        # Cleanup si RAM système > 90% ou toutes les 5 minutes
+        # Cleanup si RAM système > 92% ou toutes les 5 minutes
         time_since_cleanup = (datetime.now() - self.last_cleanup).total_seconds()
         
-        if (memory_usage['system_memory_percent'] > 90 or
+        if (memory_usage['system_memory_percent'] > 92 or
             time_since_cleanup > self.cleanup_interval):
             return True
         return False
@@ -719,7 +719,7 @@ class IntelligentLauncher:
             print("💾 Gestion mémoire: Optimisée")
             print("=" * 60)
             print("ALERTE: SYSTEME DE TRADING ACTIF!")
-            print("CAPITAL: Capital minimum: 10$")
+            print("CAPITAL: Solde MT5 réel utilisé")
             print("RISQUE: Risk: 0.5% | TP: 3 pips | SL: 5 pips")
             print("ARRET: Ctrl+C pour arreter gracieusement")
             print("=" * 60)

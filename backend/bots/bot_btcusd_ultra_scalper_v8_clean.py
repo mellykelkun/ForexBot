@@ -19,6 +19,7 @@ import MetaTrader5 as mt5
 import requests
 from requests import exceptions as req_exc
 
+from backend.utils import get_logger
 from backend.config.config_micro_scalping_pro import (
     SYMBOLS_CONFIG,
     MICRO_SCALPING_CONFIG,
@@ -167,6 +168,11 @@ class BTCUSDMicroScalperPro:
         self.decision_interval_seconds = max(8, _env_int("DECISION_INTERVAL_SECONDS", default_cooldown))
         self.required_confidence = _env_float("REQUIRED_CONFIDENCE", MICRO_SCALPING_CONFIG.get("required_confidence", 0.6))
         self.max_spread_points = _env_float("MAX_SPREAD_POINTS", 100.0)
+        self.bars_m1 = _env_int("BARS_M1", 1000)
+        self.bars_m5 = _env_int("BARS_M5", 1000)
+        self.bars_h1 = _env_int("BARS_H1", 2000)
+        self.bars_h4 = _env_int("BARS_H4", 2000)
+        self.bars_d1 = _env_int("BARS_D1", 2000)
         self.log_purge_interval_minutes = int(os.getenv("LOG_PURGE_INTERVAL_MINUTES", "720"))
         self.log_purge_max_size_mb = float(os.getenv("LOG_PURGE_MAX_MB", "50"))
         self.log_purge_last_run: Optional[datetime] = None
@@ -239,6 +245,41 @@ class BTCUSDMicroScalperPro:
         if len(values) < period:
             return None
         return sum(values[:period]) / period
+
+    def _stddev(self, values, period: int) -> Optional[float]:
+        if len(values) < period:
+            return None
+        window = values[:period]
+        mean = sum(window) / period
+        variance = sum((v - mean) ** 2 for v in window) / period
+        return variance ** 0.5
+
+    def _vwap(self, highs, lows, closes, volumes, period: int = 20) -> Optional[float]:
+        if len(closes) < period:
+            return None
+        pv = 0.0
+        vol_sum = 0.0
+        for i in range(period):
+            tp = (highs[i] + lows[i] + closes[i]) / 3
+            v = volumes[i]
+            pv += tp * v
+            vol_sum += v
+        if vol_sum == 0:
+            return None
+        return pv / vol_sum
+
+    def _slope(self, values, period: int = 20) -> Optional[float]:
+        if len(values) < period:
+            return None
+        y = values[:period]
+        n = period
+        x_mean = (n - 1) / 2
+        y_mean = sum(y) / n
+        num = sum((i - x_mean) * (y[i] - y_mean) for i in range(n))
+        den = sum((i - x_mean) ** 2 for i in range(n))
+        if den == 0:
+            return None
+        return num / den
 
     def _roc(self, values, period: int = 12) -> Optional[float]:
         if len(values) <= period:
@@ -397,6 +438,10 @@ class BTCUSDMicroScalperPro:
         hammer = lower >= body * 2 and upper <= body * 0.5 and c >= o
         shooting_star = upper >= body * 2 and lower <= body * 0.5 and c <= o
         inside_bar = h <= prev_h and l >= prev_l
+        bullish_harami = prev_c < prev_o and c > o and c <= prev_o and o >= prev_c
+        bearish_harami = prev_c > prev_o and c < o and o <= prev_c and c >= prev_o
+        marubozu = upper <= rng * 0.05 and lower <= rng * 0.05 and body >= rng * 0.7
+        long_wick_reversal = (upper >= rng * 0.6) or (lower >= rng * 0.6)
 
         return {
             "doji": bool(is_doji),
@@ -406,6 +451,10 @@ class BTCUSDMicroScalperPro:
             "hammer": bool(hammer),
             "shooting_star": bool(shooting_star),
             "inside_bar": bool(inside_bar),
+            "bullish_harami": bool(bullish_harami),
+            "bearish_harami": bool(bearish_harami),
+            "marubozu": bool(marubozu),
+            "long_wick_reversal": bool(long_wick_reversal),
         }
 
     def _compute_indicators(self, symbol: str, timeframe=mt5.TIMEFRAME_M1, bars: int = 120) -> Dict[str, Any]:
@@ -432,6 +481,14 @@ class BTCUSDMicroScalperPro:
         obv = self._obv(closes, volumes, 20)
         mfi = self._mfi(highs, lows, closes, volumes, 14)
         adx = self._adx(highs, lows, closes, 14)
+        std_20 = self._stddev(closes, 20)
+        vwap_20 = self._vwap(highs, lows, closes, volumes, 20)
+        slope_20 = self._slope(closes, 20)
+        avg_range_20 = self._sma([highs[i] - lows[i] for i in range(min(20, len(highs)))], 20)
+        avg_volume_20 = self._sma(volumes, 20)
+        momentum_10 = None
+        if len(closes) > 10:
+            momentum_10 = closes[0] - closes[10]
 
         last_candles = []
         for i in range(min(3, len(closes))):
@@ -460,6 +517,12 @@ class BTCUSDMicroScalperPro:
             "obv_20": obv,
             "mfi_14": mfi,
             "adx_14": adx,
+            "std_20": std_20,
+            "vwap_20": vwap_20,
+            "slope_20": slope_20,
+            "avg_range_20": avg_range_20,
+            "avg_volume_20": avg_volume_20,
+            "momentum_10": momentum_10,
             "last_candles": last_candles,
             "patterns": patterns,
         }
@@ -505,10 +568,11 @@ class BTCUSDMicroScalperPro:
         trade_state = {}
         if self.risk_manager:
             trade_state = self.risk_manager.get_stats(datetime.now())
-        indicators_m1 = self._compute_indicators(symbol, mt5.TIMEFRAME_M1, 180)
-        indicators_m5 = self._compute_indicators(symbol, mt5.TIMEFRAME_M5, 180)
-        indicators_h1 = self._compute_indicators(symbol, mt5.TIMEFRAME_H1, 300)
-        indicators_h4 = self._compute_indicators(symbol, mt5.TIMEFRAME_H4, 300)
+        indicators_m1 = self._compute_indicators(symbol, mt5.TIMEFRAME_M1, self.bars_m1)
+        indicators_m5 = self._compute_indicators(symbol, mt5.TIMEFRAME_M5, self.bars_m5)
+        indicators_h1 = self._compute_indicators(symbol, mt5.TIMEFRAME_H1, self.bars_h1)
+        indicators_h4 = self._compute_indicators(symbol, mt5.TIMEFRAME_H4, self.bars_h4)
+        indicators_d1 = self._compute_indicators(symbol, mt5.TIMEFRAME_D1, self.bars_d1)
         return {
             "context": "entry",
             "symbol": symbol,
@@ -524,6 +588,7 @@ class BTCUSDMicroScalperPro:
                 "m5": indicators_m5,
                 "h1": indicators_h1,
                 "h4": indicators_h4,
+                "d1": indicators_d1,
             },
             "constraints": {
                 "min_seconds_between_trades": DEFAULT_RISK["min_seconds_between_trades"],
@@ -537,6 +602,14 @@ class BTCUSDMicroScalperPro:
 
     def _request_ai_decision(self, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         try:
+            try:
+                payload_size = len(json.dumps(payload, ensure_ascii=False))
+                try:
+                    get_logger().info(f"📦 Payload IA {payload.get('symbol')}: {payload_size} bytes")
+                except Exception:
+                    logging.info("📦 Payload IA %s: %s bytes", payload.get("symbol"), payload_size)
+            except Exception:
+                pass
             resp = requests.post(
                 AI_DECISION_URL,
                 json=payload,

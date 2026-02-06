@@ -30,7 +30,7 @@ class AdaptiveAIEngine:
             "- si trade_state.trades_last_hour >= constraints.max_trades_per_hour => action=HOLD. "
             "- si trade_state.trades_last_day >= constraints.max_trades_per_day => action=HOLD. "
             "- si confidence < constraints.required_confidence => action=HOLD. "
-            "Analyse aussi les indicateurs et chandeliers si présents dans payload.indicators (M1/M5/H1/H4). "
+            "Analyse aussi les indicateurs et chandeliers si présents dans payload.indicators (M1/M5/H1/H4/D1). "
             "Favorise HOLD par défaut et n'envoie BUY/SELL que si signal fort et clair."
         )
 

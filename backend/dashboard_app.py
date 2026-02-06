@@ -9,6 +9,8 @@ import requests
 from flask import Flask, jsonify, request, render_template
 from waitress import serve
 
+from backend.config.config_micro_scalping_pro import SYMBOLS_CONFIG
+
 CONTROL_URL = os.getenv("CONTROL_URL", "http://127.0.0.1:5010")
 DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", "5004"))
 
@@ -115,7 +117,7 @@ def api_status():
         resp = requests.get(f"{CONTROL_URL}/status", timeout=3)
         return jsonify(resp.json()), resp.status_code
     except Exception as e:
-        return jsonify({"error": str(e), "metrics": {}, "processes": {}}), 503
+        return jsonify({"error": str(e), "metrics": {}, "processes": {}}), 200
 
 
 @app.route("/api/journal")
@@ -145,6 +147,23 @@ def api_logs():
     if not path:
         return jsonify({"error": "file not allowed"}), 400
     return jsonify({"lines": _tail_lines(path, limit)})
+
+
+@app.route("/api/payload-volume")
+def api_payload_volume():
+    limit = int(request.args.get("limit", "200"))
+    candidates = [
+        os.path.join("logs", "trading_system.log"),
+        os.path.join("logs", "bot_micro_scalper_v8_pro.log"),
+        os.path.join("logs", "structured_logs.json"),
+        "bot_micro_scalper_v8_pro.log",
+    ]
+    payload_lines: list[str] = []
+    for path in candidates:
+        lines = _tail_lines(path, limit)
+        payload_lines.extend([ln for ln in lines if "Payload IA" in ln])
+    payload_lines = payload_lines[-limit:]
+    return jsonify({"lines": payload_lines})
 
 
 @app.route("/api/control/<action>", methods=["POST"])
@@ -201,6 +220,17 @@ def api_markets():
             by_symbol[symbol]["last_confidence"] = decision.get("confidence")
             by_symbol[symbol]["last_price"] = decision.get("entry_price")
     return jsonify({"symbols": by_symbol})
+
+
+@app.route("/api/symbols")
+def api_symbols():
+    symbols = []
+    for name, cfg in SYMBOLS_CONFIG.items():
+        symbols.append({
+            "symbol": name,
+            "enabled": bool(cfg.get("enabled")),
+        })
+    return jsonify({"symbols": symbols})
 
 
 @app.route("/")
