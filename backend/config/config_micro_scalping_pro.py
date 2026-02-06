@@ -679,6 +679,11 @@ SUPPORT_RESISTANCE_CONFIG = {
 def verify_gold_symbol():
     """Vérifie la disponibilité de GOLD et propose des alternatives"""
     import MetaTrader5 as mt5
+
+    # Si MT5 n'est pas initialisé, ne pas désactiver GOLD
+    if mt5.terminal_info() is None:
+        print("ℹ️ MT5 non initialisé: validation GOLD reportée")
+        return "GOLD"
     
     gold_symbols = ["GOLD", "XAUUSD", "XAUUSDm", "GOLDm", "XAUUSDe", "Gold"]
     available_gold = []
@@ -945,8 +950,7 @@ class ConfigManager:
         
         print("="*60)
 
-    # Appeler le test au chargement
-    test_intelligent_exit_configuration()
+    # Test désactivé par défaut pour éviter le bruit de logs
 
     def get_symbol_exit_rules(symbol: str) -> Dict:
         """Retourne les règles de sortie pour un symbole spécifique"""

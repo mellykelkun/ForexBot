@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <title>Dashboard Trading Pro</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root {
+      --bg: #0b1020;
+      --card: #0f172a;
+      --border: #1f2a44;
+      --accent: #22d3ee;
+      --accent2: #a78bfa;
+      --text: #e5e7eb;
+      --muted: #94a3b8;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: "Inter", system-ui, -apple-system, Segoe UI, Arial, sans-serif;
+      background: radial-gradient(1200px 600px at 10% -20%, #1f2a44 0%, transparent 60%), var(--bg);
+      color: var(--text);
+      margin:0;
+    }
+    header {
+      padding:16px 24px;
+      background: linear-gradient(90deg, #0f172a 0%, #0b1220 100%);
+      display:flex; align-items:center; justify-content:space-between; gap:12px;
+      position: sticky; top: 0; z-index: 5; border-bottom: 1px solid var(--border);
+    }
+    .brand { display:flex; align-items:center; gap:12px; }
+    .dot { width:10px; height:10px; border-radius:50%; background: var(--accent); box-shadow: 0 0 12px var(--accent); }
+    .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap:16px; padding:16px; }
+    .grid-2 { display:grid; grid-template-columns: 2fr 1fr; gap:16px; padding: 0 16px 16px; }
+    .card { background: linear-gradient(180deg, #0f172a 0%, #0b1220 100%); border:1px solid var(--border); border-radius:16px; padding:16px; box-shadow: 0 10px 20px rgba(0,0,0,.2); }
+    .card h3 { margin: 0 0 10px; font-size: 16px; color: #e2e8f0; }
+    button { background:#2563eb; color:white; border:none; padding:10px 14px; border-radius:10px; margin-right:8px; cursor:pointer; font-weight:600; }
+    button.secondary { background:#1f2937; }
+    button.warn { background:#dc2626; }
+    .badge { padding:4px 8px; border-radius:999px; background:#111827; border:1px solid var(--border); color: var(--muted); }
+    .muted { color: var(--muted); }
+    pre { background:#0b1220; padding:10px; border-radius:10px; overflow:auto; max-height:240px; border: 1px solid var(--border); }
+    table { width:100%; border-collapse: collapse; }
+    th, td { text-align:left; padding:8px; border-bottom:1px solid var(--border); font-size: 13px; }
+    th { color: var(--muted); font-weight:600; }
+    .pill { padding:2px 8px; border-radius:999px; background:#111827; border:1px solid var(--border); font-size:12px; }
+    .row { display:flex; gap:12px; align-items:center; flex-wrap: wrap; }
+    .kpi { display:flex; gap:10px; align-items:center; }
+    .kpi b { color: var(--accent); }
+    .scroll {
+      overflow: auto;
+      max-height: 260px;
+      scrollbar-width: thin;
+      scrollbar-color: #334155 transparent;
+    }
+    .scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+    .scroll::-webkit-scrollbar-thumb { background: #334155; border-radius: 8px; }
+    .scroll::-webkit-scrollbar-track { background: transparent; }
+  </style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <span class="dot"></span>
+    <div>
+      <strong>Dashboard Trading Pro</strong>
+      <div class="muted" id="now"></div>
+    </div>
+  </div>
+  <div>
+    <button onclick="control('start')">Démarrer</button>
+    <button class="secondary" onclick="control('stop')">Stop</button>
+    <button class="secondary" onclick="control('restart')">Redémarrer</button>
+    <button class="warn" onclick="purgeLogs()">Purger logs</button>
+  </div>
+</header>
+
+<div class="grid">
+  <div class="card">
+    <h3>Statut système</h3>
+    <div class="scroll"><pre id="status">Chargement...</pre></div>
+  </div>
+  <div class="card">
+    <h3>IA – décisions récentes</h3>
+    <div class="scroll"><pre id="ai">Chargement...</pre></div>
+  </div>
+  <div class="card">
+    <h3>Journal trading</h3>
+    <div class="scroll"><pre id="journal">Chargement...</pre></div>
+  </div>
+  <div class="card">
+    <h3>Logs lanceur</h3>
+    <div class="scroll"><pre id="logs">Chargement...</pre></div>
+  </div>
+</div>
+
+<div class="grid-2">
+  <div class="card">
+    <h3>Marchés – état récent</h3>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Symbole</th>
+            <th>Dernière action</th>
+            <th>Confiance</th>
+            <th>Événement</th>
+            <th>Raison</th>
+            <th>Timestamp</th>
+          </tr>
+        </thead>
+        <tbody id="markets"></tbody>
+      </table>
+    </div>
+  </div>
+  <div class="card">
+    <h3>Maintenance & purge</h3>
+    <div class="row">
+      <span class="pill">Dernière purge:</span>
+      <span id="lastPurge" class="muted">-</span>
+    </div>
+    <div style="height:8px"></div>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>Log</th><th>Taille</th></tr>
+        </thead>
+        <tbody id="logSizes"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+async function fetchJson(url) {
+  const r = await fetch(url);
+  const data = await r.json();
+  return { ok: r.ok, data };
+}
+
+function stickToBottom(el) {
+  if (!el) return;
+  el.scrollTop = el.scrollHeight;
+}
+
+function updateNow() {
+  document.getElementById('now').textContent = new Date().toLocaleString('fr-FR');
+}
+
+async function refresh() {
+  try {
+    const statusResp = await fetchJson('/api/status');
+    document.getElementById('status').textContent = JSON.stringify(statusResp.data, null, 2);
+  } catch (e) {
+    document.getElementById('status').textContent = 'Erreur status: ' + e;
+  }
+
+  try {
+    const aiResp = await fetchJson('/api/ai?limit=20');
+    document.getElementById('ai').textContent = JSON.stringify(aiResp.data.items || [], null, 2);
+  } catch (e) {
+    document.getElementById('ai').textContent = 'Erreur IA: ' + e;
+  }
+
+  try {
+    const journalResp = await fetchJson('/api/journal?limit=20');
+    document.getElementById('journal').textContent = JSON.stringify(journalResp.data.items || [], null, 2);
+  } catch (e) {
+    document.getElementById('journal').textContent = 'Erreur journal: ' + e;
+  }
+
+  try {
+    const logsResp = await fetchJson('/api/logs?file=process_manager.log&lines=80');
+    document.getElementById('logs').textContent = (logsResp.data.lines || []).join('\n');
+  } catch (e) {
+    document.getElementById('logs').textContent = 'Erreur logs: ' + e;
+  }
+
+  stickToBottom(document.getElementById('ai'));
+  stickToBottom(document.getElementById('journal'));
+  stickToBottom(document.getElementById('logs'));
+
+  try {
+    const marketsResp = await fetchJson('/api/markets');
+    const symbols = marketsResp.data.symbols || {};
+    const rows = Object.keys(symbols).sort().map(sym => {
+      const s = symbols[sym] || {};
+      return `
+        <tr>
+          <td><b>${sym}</b></td>
+          <td>${s.last_action || '-'}</td>
+          <td>${s.last_confidence ?? '-'}</td>
+          <td>${s.last_event || '-'}</td>
+          <td>${s.last_reason || '-'}</td>
+          <td>${s.last_ts || '-'}</td>
+        </tr>`;
+    }).join('');
+    document.getElementById('markets').innerHTML = rows || '<tr><td colspan="6">Aucune donnée</td></tr>';
+  } catch (e) {
+    document.getElementById('markets').innerHTML = `<tr><td colspan="6">Erreur marchés: ${e}</td></tr>`;
+  }
+
+  try {
+    const maintResp = await fetchJson('/api/maintenance');
+    document.getElementById('lastPurge').textContent = maintResp.data.last_purge || '-';
+    const rows = (maintResp.data.log_sizes || []).map(l => `<tr><td>${l.name}</td><td>${l.size_h}</td></tr>`).join('');
+    document.getElementById('logSizes').innerHTML = rows || '<tr><td colspan="2">Aucun log</td></tr>';
+  } catch (e) {
+    document.getElementById('lastPurge').textContent = '-';
+    document.getElementById('logSizes').innerHTML = `<tr><td colspan="2">Erreur maintenance: ${e}</td></tr>`;
+  }
+
+  updateNow();
+}
+
+async function control(action) {
+  await fetch('/api/control/' + action, { method: 'POST' });
+  setTimeout(refresh, 500);
+}
+
+async function purgeLogs() {
+  const ok = confirm('Confirmer la purge totale de tous les logs ?');
+  if (!ok) return;
+  await fetch('/api/purge-logs', { method: 'POST' });
+  setTimeout(refresh, 500);
+}
+
+setInterval(refresh, 5000);
+updateNow();
+refresh();
+</script>
+</body>
+</html>

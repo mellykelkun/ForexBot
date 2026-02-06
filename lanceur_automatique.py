@@ -156,9 +156,9 @@ class MemoryCleaner:
             return 0
 
 class MemoryManager:
-    """Gestionnaire de mémoire avec cleanup automatique ULTRA AGGRESSIF"""
+    """Gestionnaire de mémoire avec cleanup automatique"""
     
-    def __init__(self, cleanup_interval=120):  # 🔥 2 minutes au lieu de 5
+    def __init__(self, cleanup_interval=300):
         self.cleanup_interval = cleanup_interval
         self.cleaner = MemoryCleaner()
         self.last_cleanup = datetime.now()
@@ -167,10 +167,10 @@ class MemoryManager:
         """Détermine si un cleanup est nécessaire - SEUILS AGGRESSIFS"""
         memory_usage = self.cleaner.get_memory_usage()
         
-        # Cleanup si RAM système > 75% ou toutes les 2 minutes
+        # Cleanup si RAM système > 90% ou toutes les 5 minutes
         time_since_cleanup = (datetime.now() - self.last_cleanup).total_seconds()
         
-        if (memory_usage['system_memory_percent'] > 75 or  # 🔥 Seuil plus bas
+        if (memory_usage['system_memory_percent'] > 90 or
             time_since_cleanup > self.cleanup_interval):
             return True
         return False
@@ -183,7 +183,7 @@ class MemoryManager:
                     self.cleaner.comprehensive_cleanup()
                     self.last_cleanup = datetime.now()
                 
-                time.sleep(30)  # 🔥 Vérifier toutes les 30 secondes
+                time.sleep(60)
                 
             except Exception as e:
                 logging.error(f"❌ Erreur cleanup périodique: {e}")
@@ -208,6 +208,16 @@ class IntelligentProcessManager:
                 'required': True,
                 'startup_time': 15,
                 'timeout': 40
+            },
+            'dashboard': {
+                'command': [sys.executable, '-m', 'backend.dashboard_app'],
+                'port': 5004,
+                'health_check': '/health',
+                'max_restarts': 3,
+                'restart_delay': 20,
+                'required': False,
+                'startup_time': 8,
+                'timeout': 30
             },
             'bot': {
                 'command': [
@@ -624,13 +634,30 @@ class IntelligentLauncher:
     def __init__(self):
         self.process_manager = IntelligentProcessManager()
         self.running = False
+        self.control_lock = threading.Lock()
         
     def get_optimized_startup_sequence(self):
         """Retourne la séquence optimisée pour la sortie intelligente"""
         return [
             'ai_engine',           # ✅ DEUXIÈME - IA distante (Groq)
+            'dashboard',
             'bot'                  # ✅ DERNIER - Dépend de tout le système
         ]
+
+    def start_system_control(self):
+        with self.control_lock:
+            return self.start_system()
+
+    def stop_system_control(self):
+        with self.control_lock:
+            self.running = False
+            self.process_manager.graceful_shutdown()
+            return True
+
+    def restart_system_control(self):
+        with self.control_lock:
+            self.process_manager.graceful_shutdown()
+            return self.start_system()
 
     def start_system(self):
         """Demarre l'ensemble du systeme - VERSION AMÉLIORÉE"""
@@ -748,6 +775,51 @@ class IntelligentLauncher:
 def main():
     """Point d'entree principal"""
     launcher = IntelligentLauncher()
+
+    def control_server():
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        class Handler(BaseHTTPRequestHandler):
+            def _json(self, code: int, payload: dict):
+                body = json.dumps(payload).encode("utf-8")
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format, *args):
+                return
+
+            def do_GET(self):
+                if self.path == "/status":
+                    launcher.process_manager.update_performance_metrics()
+                    metrics = launcher.process_manager.performance_metrics
+                    processes = {}
+                    for name, proc in launcher.process_manager.processes.items():
+                        processes[name] = {
+                            "running": proc.poll() is None,
+                            "pid": proc.pid if proc else None,
+                        }
+                    return self._json(200, {"metrics": metrics, "processes": processes})
+                return self._json(404, {"error": "not_found"})
+
+            def do_POST(self):
+                if self.path == "/start":
+                    ok = launcher.start_system_control()
+                    return self._json(200, {"ok": ok})
+                if self.path == "/stop":
+                    ok = launcher.stop_system_control()
+                    return self._json(200, {"ok": ok})
+                if self.path == "/restart":
+                    ok = launcher.restart_system_control()
+                    return self._json(200, {"ok": ok})
+                return self._json(404, {"error": "not_found"})
+
+        server = HTTPServer(("127.0.0.1", 5010), Handler)
+        server.serve_forever()
+
+    threading.Thread(target=control_server, daemon=True).start()
     
     try:
         launcher.run()

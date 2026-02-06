@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import time
 from typing import Any, Dict, Optional
 
 import requests
@@ -33,7 +34,7 @@ class GroqService:
         self,
         system_prompt: str,
         user_payload: Dict[str, Any],
-        timeout: int = 10,
+        timeout: int = 20,
         temperature: float = 0.2,
         max_tokens: int = 200,
     ) -> Optional[Dict[str, Any]]:
@@ -57,35 +58,40 @@ class GroqService:
             "response_format": {"type": "json_object"},
         }
 
-        try:
-            response = requests.post(url, headers=headers, json=payload, timeout=timeout)
-            if response.status_code != 200:
-                # Retry sans response_format si JSON échoue
-                if "json_validate_failed" in response.text:
-                    payload_no_format = {
-                        **payload,
-                        "messages": [
-                            {"role": "system", "content": system_prompt + "\nRetourne uniquement un JSON valide."},
-                            {"role": "user", "content": json.dumps(user_payload)},
-                        ],
-                    }
-                    payload_no_format.pop("response_format", None)
-                    retry = requests.post(url, headers=headers, json=payload_no_format, timeout=timeout)
-                    if retry.status_code == 200:
-                        data = retry.json()
-                        content = data["choices"][0]["message"]["content"]
-                        return self._safe_json_parse(content)
-                self.logger.warning(
-                    "Groq error %s: %s", response.status_code, response.text[:200]
-                )
-                return None
+        attempts = 3
+        for i in range(attempts):
+            try:
+                response = requests.post(url, headers=headers, json=payload, timeout=timeout)
+                if response.status_code != 200:
+                    # Retry sans response_format si JSON échoue
+                    if "json_validate_failed" in response.text:
+                        payload_no_format = {
+                            **payload,
+                            "messages": [
+                                {"role": "system", "content": system_prompt + "\nRetourne uniquement un JSON valide."},
+                                {"role": "user", "content": json.dumps(user_payload)},
+                            ],
+                        }
+                        payload_no_format.pop("response_format", None)
+                        retry = requests.post(url, headers=headers, json=payload_no_format, timeout=timeout)
+                        if retry.status_code == 200:
+                            data = retry.json()
+                            content = data["choices"][0]["message"]["content"]
+                            return self._safe_json_parse(content)
+                    self.logger.warning(
+                        "Groq error %s: %s", response.status_code, response.text[:200]
+                    )
+                    return None
 
-            data = response.json()
-            content = data["choices"][0]["message"]["content"]
-            return self._safe_json_parse(content)
-        except Exception as exc:
-            self.logger.warning("Groq request failed: %s", exc)
-            return None
+                data = response.json()
+                content = data["choices"][0]["message"]["content"]
+                return self._safe_json_parse(content)
+            except Exception as exc:
+                if i < attempts - 1:
+                    time.sleep(0.8 * (i + 1))
+                    continue
+                self.logger.warning("Groq request failed: %s", exc)
+                return None
 
     def _safe_json_parse(self, content: str) -> Optional[Dict[str, Any]]:
         try:

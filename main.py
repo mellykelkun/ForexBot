@@ -338,6 +338,9 @@ def main():
         logger.info("🤖 Démarrage du bot Micro Scalper V8...")
         
         bot = BTCUSDMicroScalperPro()
+        if not bot.initialize(real_trading=True, mode=args.strategy):
+            logger.error("❌ Échec initialisation bot (MT5/risque)")
+            return 1
         
         # Configuration finale
         logger.info("=" * 60)

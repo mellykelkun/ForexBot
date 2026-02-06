@@ -5,6 +5,7 @@ Tout traitement local/heuristique supprimé.
 
 from datetime import datetime
 
+import logging
 from flask import Flask, jsonify, request
 
 from backend.ai.groq_service import GroqService
@@ -23,12 +24,20 @@ class AdaptiveAIEngine:
             "Clés obligatoires: action, confidence, reason. "
             "Si context='entry': action ∈ {BUY, SELL, HOLD}. "
             "Si action BUY/SELL: inclure entry_price, sl_price, tp_price (nombres). "
-            "Si context='exit': action ∈ {EXIT, HOLD}."
+            "Si context='exit': action ∈ {EXIT, HOLD}. "
+            "Respecte strictement les contraintes si présentes dans payload.constraints et payload.trade_state : "
+            "- si trade_state.last_trade_seconds_ago < constraints.min_seconds_between_trades => action=HOLD. "
+            "- si trade_state.trades_last_hour >= constraints.max_trades_per_hour => action=HOLD. "
+            "- si trade_state.trades_last_day >= constraints.max_trades_per_day => action=HOLD. "
+            "- si confidence < constraints.required_confidence => action=HOLD. "
+            "Analyse aussi les indicateurs et chandeliers si présents dans payload.indicators (M1/M5/H1/H4). "
+            "Favorise HOLD par défaut et n'envoie BUY/SELL que si signal fort et clair."
         )
 
         result = self.groq.chat_json(
             system_prompt=prompt,
             user_payload=payload,
+            timeout=20,
         )
 
         if not isinstance(result, dict):
@@ -39,6 +48,7 @@ class AdaptiveAIEngine:
 
 app = Flask(__name__)
 ai_engine = AdaptiveAIEngine()
+logger = logging.getLogger("AIEngine")
 
 
 @app.route("/")
@@ -65,6 +75,13 @@ def decision_api():
     try:
         payload = request.get_json() or {}
         decision = ai_engine.decide_autonomous(payload)
+        if isinstance(decision, dict):
+            logger.info(
+                "IA decision | symbol=%s | action=%s | confidence=%s",
+                payload.get("symbol"),
+                decision.get("action"),
+                decision.get("confidence"),
+            )
         return jsonify(decision)
     except Exception as e:
         return jsonify({"error": str(e)}), 503

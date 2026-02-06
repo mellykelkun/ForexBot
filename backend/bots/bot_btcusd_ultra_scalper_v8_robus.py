@@ -3,6 +3,10 @@ BTCUSD MICRO SCALPER V8 PRO - Version stable (IA uniquement)
 Décision d'entrée/sortie via /api/decision (Groq)
 """
 
+raise RuntimeError(
+    "Fichier legacy archivé. Utilisez bot_btcusd_ultra_scalper_v8_clean.py."
+)
+
 import argparse
 import hashlib
 import json
