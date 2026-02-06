@@ -1,10 +1,7 @@
 """AI subpackage (compat wrappers)."""
 
-from .adaptive_engine import AdaptiveAIEngine, TradingSignal, SignalDirection, MarketRegime
+from .adaptive_engine import AdaptiveAIEngine
 
 __all__ = [
     "AdaptiveAIEngine",
-    "TradingSignal",
-    "SignalDirection",
-    "MarketRegime",
 ]

@@ -2634,6 +2634,82 @@ import requests
 AI_DECISION_URL = os.getenv("AI_ENGINE_URL", "http://127.0.0.1:5003/api/decision")
 AI_HEALTH_URL = os.getenv("AI_ENGINE_HEALTH_URL", "http://127.0.0.1:5003/health")
 
+DEFAULT_RISK = {
+    "max_trades_per_hour": 12,
+    "max_trades_per_day": 120,
+    "min_seconds_between_trades": 5,
+    "max_daily_loss_pct": 2.0,
+    "max_slippage_points": 25,
+    "max_latency_ms": 800,
+}
+
+
+class TradeJournal:
+    def __init__(self, log_path: str = "logs/trade_journal.jsonl"):
+        self.log_path = log_path
+        os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
+        self.last_hash = self._load_last_hash()
+
+    def _load_last_hash(self) -> str:
+        if not os.path.exists(self.log_path):
+            return ""
+        try:
+            with open(self.log_path, "rb") as f:
+                lines = f.read().splitlines()
+                if not lines:
+                    return ""
+                last = json.loads(lines[-1].decode("utf-8"))
+                return last.get("hash", "")
+        except Exception:
+            return ""
+
+    def log_event(self, event: Dict[str, Any]):
+        payload = {"timestamp": datetime.utcnow().isoformat(), **event, "prev_hash": self.last_hash}
+        raw = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        payload["hash"] = digest
+        with open(self.log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        self.last_hash = digest
+
+
+class RiskManager:
+    def __init__(self, starting_balance: float, risk_cfg: Dict[str, Any]):
+        self.starting_balance = starting_balance
+        self.cfg = {**DEFAULT_RISK, **(risk_cfg or {})}
+        self.trade_times = deque(maxlen=1000)
+        self.last_trade_time: Optional[datetime] = None
+
+    def _prune(self, now: datetime):
+        while self.trade_times and (now - self.trade_times[0]).total_seconds() > 24 * 3600:
+            self.trade_times.popleft()
+
+    def can_trade(self, now: datetime, current_balance: float) -> (bool, str):
+        self._prune(now)
+
+        if self.last_trade_time:
+            dt = (now - self.last_trade_time).total_seconds()
+            if dt < self.cfg["min_seconds_between_trades"]:
+                return False, f"Anti-sur-trading: {dt:.1f}s < {self.cfg['min_seconds_between_trades']}s"
+
+        trades_last_hour = [t for t in self.trade_times if (now - t).total_seconds() <= 3600]
+        if len(trades_last_hour) >= self.cfg["max_trades_per_hour"]:
+            return False, "Limite trades/heure atteinte"
+
+        if len(self.trade_times) >= self.cfg["max_trades_per_day"]:
+            return False, "Limite trades/jour atteinte"
+
+        max_loss = -abs(self.starting_balance) * (self.cfg["max_daily_loss_pct"] / 100.0)
+        pnl = current_balance - self.starting_balance
+        if pnl <= max_loss:
+            return False, "Limite de perte journalière atteinte"
+
+        return True, "OK"
+
+    def record_trade(self, when: datetime):
+        self.trade_times.append(when)
+        self.last_trade_time = when
+
 
 class BTCUSDMicroScalperPro:
     def __init__(self):
@@ -2642,6 +2718,8 @@ class BTCUSDMicroScalperPro:
         self.active_symbols = [s for s, cfg in SYMBOLS_CONFIG.items() if cfg.get("enabled")]
         self.request_timeout = SECURITY_CONFIG.get("request_timeout", 5)
         self.last_trade_time: Optional[datetime] = None
+        self.journal = TradeJournal()
+        self.risk_manager: Optional[RiskManager] = None
 
     def initialize(self, real_trading: bool = False, mode: str = "MICRO") -> bool:
         self.real_trading = real_trading
@@ -2655,6 +2733,7 @@ class BTCUSDMicroScalperPro:
         if not self.active_symbols:
             logging.error("❌ Aucun symbole actif")
             return False
+        self.risk_manager = RiskManager(self.account.balance, {})
         logging.info("✅ MT5 initialisé | Mode réel: %s", self.real_trading)
         return True
 
@@ -2720,6 +2799,7 @@ class BTCUSDMicroScalperPro:
                 continue
             action = decision.get("action")
             if action in ("BUY", "SELL"):
+                self.journal.log_event({"type": "decision", "symbol": symbol, "decision": decision})
                 decision["symbol"] = symbol
                 return decision
         return None
@@ -2728,6 +2808,17 @@ class BTCUSDMicroScalperPro:
         symbol = decision.get("symbol")
         action = decision.get("action")
         if not symbol or action not in ("BUY", "SELL"):
+            return False
+
+        if not self.risk_manager:
+            return False
+
+        account_info = mt5.account_info()
+        balance = account_info.balance if account_info else 0.0
+        ok, reason = self.risk_manager.can_trade(datetime.now(), balance)
+        if not ok:
+            self.journal.log_event({"type": "blocked", "symbol": symbol, "reason": reason})
+            logging.warning("⚠️ Trade bloqué: %s", reason)
             return False
 
         if not self.real_trading:
@@ -2760,12 +2851,78 @@ class BTCUSDMicroScalperPro:
             "type_time": mt5.ORDER_TIME_GTC,
         }
 
+        start_ts = time.perf_counter()
         result = mt5.order_send(request)
+        latency_ms = (time.perf_counter() - start_ts) * 1000.0
         if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
             logging.error("❌ Ordre rejeté: %s", result)
+            self.journal.log_event({"type": "order_rejected", "symbol": symbol, "action": action, "result": str(result)})
             return False
+        self.risk_manager.record_trade(datetime.now())
+        self.journal.log_event({
+            "type": "order_filled",
+            "symbol": symbol,
+            "action": action,
+            "price": price,
+            "latency_ms": round(latency_ms, 1),
+        })
+
+        symbol_info = mt5.symbol_info(symbol)
+        if symbol_info and hasattr(result, "price"):
+            slippage_points = abs(result.price - price) / symbol_info.point
+            if slippage_points > DEFAULT_RISK["max_slippage_points"]:
+                self.journal.log_event({
+                    "type": "slippage_alert",
+                    "symbol": symbol,
+                    "slippage_points": slippage_points,
+                })
+                logging.warning("⚠️ Slippage élevé: %.1f points", slippage_points)
+        if latency_ms > DEFAULT_RISK["max_latency_ms"]:
+            logging.warning("⚠️ Latence élevée: %.0f ms", latency_ms)
         logging.info("✅ Ordre exécuté: %s %s", action, symbol)
         return True
+
+    def run_backtest(self, symbol: str = "BTCUSD", timeframe=mt5.TIMEFRAME_M1, bars: int = 500):
+        rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, bars)
+        if rates is None or len(rates) < 10:
+            logging.error("❌ Données insuffisantes pour backtest")
+            return
+
+        pnl = 0.0
+        trades = 0
+        wins = 0
+
+        for i in range(1, len(rates)):
+            bar = rates[i]
+            payload = {
+                "context": "entry",
+                "symbol": symbol,
+                "bid": bar["close"],
+                "ask": bar["close"],
+                "spread": 0,
+                "volume": bar["tick_volume"],
+                "timestamp": datetime.fromtimestamp(bar["time"]).isoformat(),
+                "risk": MICRO_SCALPING_CONFIG.get("risk_per_trade", 0.5),
+            }
+            decision = self._request_ai_decision(payload)
+            if not decision or decision.get("action") not in ("BUY", "SELL"):
+                continue
+
+            next_bar = rates[i + 1] if i + 1 < len(rates) else bar
+            entry = bar["close"]
+            exit_price = next_bar["close"]
+            if decision.get("action") == "BUY":
+                trade_pnl = exit_price - entry
+            else:
+                trade_pnl = entry - exit_price
+
+            pnl += trade_pnl
+            trades += 1
+            if trade_pnl > 0:
+                wins += 1
+
+        win_rate = (wins / trades * 100) if trades else 0
+        logging.info("📊 BACKTEST: trades=%s win_rate=%.1f%% pnl=%.5f", trades, win_rate, pnl)
 
     def perform_health_check(self) -> bool:
         try:
@@ -2785,6 +2942,9 @@ def parse_arguments():
     parser = argparse.ArgumentParser(description="BTCUSD Micro Scalper V8 PRO - IA")
     parser.add_argument("--real", action="store_true", help="Mode trading réel")
     parser.add_argument("--mode", choices=["MICRO", "AGGRESSIVE", "CONSERVATIVE"], default="MICRO")
+    parser.add_argument("--backtest", action="store_true", help="Lancer un backtest IA")
+    parser.add_argument("--bars", type=int, default=500, help="Nombre de bougies backtest")
+    parser.add_argument("--symbol", type=str, default="BTCUSD", help="Symbole backtest")
     return parser.parse_args()
 
 
@@ -2795,6 +2955,10 @@ def main():
     bot = BTCUSDMicroScalperPro()
     if not bot.initialize(real_trading=args.real, mode=args.mode):
         logging.error("❌ Échec initialisation bot V8 PRO")
+        return
+
+    if args.backtest:
+        bot.run_backtest(symbol=args.symbol, bars=args.bars)
         return
 
     last_decision = datetime.now()

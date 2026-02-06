@@ -17,17 +17,6 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from backend.utils import setup_global_logger, get_logger
 from backend.core import initialize_engine
-try:
-    from backend.core import initialize_engine
-except ImportError:
-    def initialize_engine(account, password, server, symbol):
-        class MockEngine:
-            def ensure_connection(self):
-                print("⚠️  Mode simulation - Pas de connexion MT5 réelle")
-                return True
-            def shutdown(self):
-                pass
-        return MockEngine()
 from backend.config import Config, INTELLIGENT_EXIT_CONFIG, GUARDIAN_SYSTEM_CONFIG
 
 def parse_arguments():
@@ -35,9 +24,9 @@ def parse_arguments():
     parser = argparse.ArgumentParser(description='BTCUSD Micro Scalper V8 Pro')
     
     parser.add_argument('--mode', 
-                       choices=['BACKTEST', 'PAPER', 'REAL'], 
-                       default='PAPER',
-                       help='Mode de trading (défaut: PAPER)')
+                       choices=['REAL'], 
+                       default='REAL',
+                       help='Mode de trading (réel uniquement)')
     
     parser.add_argument('--strategy',
                        choices=['MICRO', 'SCALPING', 'SWING'],
@@ -113,16 +102,12 @@ def initialize_trading_system(mode: str, strategy: str, risk: float, capital: fl
         config = Config()
         
         # Ajustement selon le mode
-        if mode == 'REAL':
-            config.TRADING_MODE = 'REAL'
-            config.RISK_PER_TRADE = risk
-            logger.warning("🚨 MODE RÉEL ACTIVÉ - TRADING AVEC ARGENT RÉEL!")
-        elif mode == 'PAPER':
-            config.TRADING_MODE = 'PAPER'
-            logger.info("📝 MODE PAPER - Simulation sans risque")
-        else:
-            config.TRADING_MODE = 'BACKTEST'
-            logger.info("🔬 MODE BACKTEST - Analyse historique")
+        if mode != 'REAL':
+            raise RuntimeError("Mode non autorisé: REAL uniquement")
+
+        config.TRADING_MODE = 'REAL'
+        config.RISK_PER_TRADE = risk
+        logger.warning("🚨 MODE RÉEL ACTIVÉ - TRADING AVEC ARGENT RÉEL!")
         
         # Ajustement stratégie
         if strategy == 'MICRO':
@@ -154,50 +139,49 @@ def initialize_trading_system(mode: str, strategy: str, risk: float, capital: fl
         else:
             config.INITIAL_CAPITAL = 1000.0  # Valeur par défaut
         
-        # ✅ CORRECTION: CONNEXION MT5 RÉELLE pour le mode REAL
-        if mode == 'REAL':
-            logger.info("🔗 Tentative de connexion MT5 RÉELLE...")
-            try:
-                import MetaTrader5 as mt5
-                
-                # ⚠️ CONFIGURATION - REMPLACER AVEC TES IDENTIFIANTS
-                mt5_login = 333966561  # ⚠️ REMPLACER par ton vrai login MT5
-                mt5_password = "Arthur2004@"  # ⚠️ REMPLACER par ton mot de passe
-                mt5_server = "XMGlobal-MT5 9"  # ⚠️ REMPLACER par ton serveur broker
-                
-                # Initialiser MT5
-                if not mt5.initialize():
-                    error_msg = mt5.last_error()
-                    logger.error(f"❌ Échec initialisation MT5: {error_msg}")
-                    raise Exception(f"MT5 initialization failed: {error_msg}")
-                
-                # Se connecter au compte
-                if not mt5.login(mt5_login, mt5_password, mt5_server):
-                    error_msg = mt5.last_error()
-                    logger.error(f"❌ Échec connexion MT5: {error_msg}")
-                    raise Exception(f"MT5 login failed: {error_msg}")
-                
-                # Récupérer les infos du compte
-                account_info = mt5.account_info()
-                if account_info:
-                    logger.info("✅ CONNEXION MT5 RÉELLE RÉUSSIE!")
-                    logger.info(f"   📊 Compte: {mt5_login}")
-                    logger.info(f"   💰 Balance: {account_info.balance:.2f} {account_info.currency}")
-                    logger.info(f"   🏦 Broker: {mt5_server}")
-                    logger.info(f"   📈 Effet de levier: 1:{account_info.leverage}")
-                else:
-                    logger.warning("⚠️  Connexion MT5 réussie mais infos compte non disponibles")
-                
-                # Créer le moteur MT5 réel
-                class RealMT5Engine:
-                    def __init__(self):
-                        self.simulation_mode = False
-                        self.connected = True
-                        self.login = mt5_login
-                        self.server = mt5_server
-                        
-                    def ensure_connection(self):
-                        """Vérifie et maintient la connexion MT5"""
+        # ✅ CONNEXION MT5 RÉELLE (obligatoire)
+        logger.info("🔗 Tentative de connexion MT5 RÉELLE...")
+        try:
+            import MetaTrader5 as mt5
+
+            mt5_login = os.getenv("MT5_LOGIN")
+            mt5_password = os.getenv("MT5_PASSWORD")
+            mt5_server = os.getenv("MT5_SERVER")
+
+            if not mt5_login or not mt5_password or not mt5_server:
+                raise RuntimeError("Variables MT5_LOGIN, MT5_PASSWORD, MT5_SERVER obligatoires")
+
+            mt5_login = int(mt5_login)
+
+            if not mt5.initialize():
+                error_msg = mt5.last_error()
+                logger.error(f"❌ Échec initialisation MT5: {error_msg}")
+                raise Exception(f"MT5 initialization failed: {error_msg}")
+
+            if not mt5.login(mt5_login, mt5_password, mt5_server):
+                error_msg = mt5.last_error()
+                logger.error(f"❌ Échec connexion MT5: {error_msg}")
+                raise Exception(f"MT5 login failed: {error_msg}")
+
+            account_info = mt5.account_info()
+            if account_info:
+                logger.info("✅ CONNEXION MT5 RÉELLE RÉUSSIE!")
+                logger.info(f"   📊 Compte: {mt5_login}")
+                logger.info(f"   💰 Balance: {account_info.balance:.2f} {account_info.currency}")
+                logger.info(f"   🏦 Broker: {mt5_server}")
+                logger.info(f"   📈 Effet de levier: 1:{account_info.leverage}")
+            else:
+                logger.warning("⚠️  Connexion MT5 réussie mais infos compte non disponibles")
+
+            class RealMT5Engine:
+                def __init__(self):
+                    self.simulation_mode = False
+                    self.connected = True
+                    self.login = mt5_login
+                    self.server = mt5_server
+
+                def ensure_connection(self):
+                    """Vérifie et maintient la connexion MT5"""
                         try:
                             if not mt5.initialize():
                                 logger.warning("🔄 Reconnexion MT5...")
