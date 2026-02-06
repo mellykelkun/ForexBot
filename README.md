@@ -80,6 +80,15 @@ Variables principales :
 - **DASHBOARD_SECRET, FLASK_DEBUG** : dashboard
 - **LOG_PURGE_INTERVAL_MINUTES, LOG_PURGE_MAX_MB** : purge auto logs
 
+Variables de réglages trading (sécu & comportement) :
+- **MAX_TRADES_PER_HOUR, MAX_TRADES_PER_DAY**
+- **MIN_SECONDS_BETWEEN_TRADES**
+- **MAX_DAILY_LOSS_PCT**
+- **MAX_SLIPPAGE_POINTS, MAX_LATENCY_MS**
+- **COMMISSION_PER_LOT, SIMULATED_SLIPPAGE_POINTS**
+- **DECISION_INTERVAL_SECONDS, REQUIRED_CONFIDENCE**
+- **MAX_SPREAD_POINTS**
+
 Variables utiles supplémentaires :
 - **AI_ENGINE_URL** : URL IA si serveur distant
 - **AI_ENGINE_HEALTH_URL** : healthcheck IA

@@ -29,15 +29,29 @@ from backend.config.config_micro_scalping_pro import (
 AI_DECISION_URL = os.getenv("AI_ENGINE_URL", "http://127.0.0.1:5003/api/decision")
 AI_HEALTH_URL = os.getenv("AI_ENGINE_HEALTH_URL", "http://127.0.0.1:5003/health")
 
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except Exception:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except Exception:
+        return default
+
+
 DEFAULT_RISK = {
-    "max_trades_per_hour": 6,
-    "max_trades_per_day": 60,
-    "min_seconds_between_trades": 15,
-    "max_daily_loss_pct": 2.0,
-    "max_slippage_points": 25,
-    "max_latency_ms": 800,
-    "commission_per_lot": 0.0,
-    "simulated_slippage_points": 5,
+    "max_trades_per_hour": _env_int("MAX_TRADES_PER_HOUR", 6),
+    "max_trades_per_day": _env_int("MAX_TRADES_PER_DAY", 60),
+    "min_seconds_between_trades": _env_int("MIN_SECONDS_BETWEEN_TRADES", 15),
+    "max_daily_loss_pct": _env_float("MAX_DAILY_LOSS_PCT", 2.0),
+    "max_slippage_points": _env_float("MAX_SLIPPAGE_POINTS", 25),
+    "max_latency_ms": _env_int("MAX_LATENCY_MS", 800),
+    "commission_per_lot": _env_float("COMMISSION_PER_LOT", 0.0),
+    "simulated_slippage_points": _env_float("SIMULATED_SLIPPAGE_POINTS", 5),
 }
 
 DEFAULT_GUARD = {
@@ -149,8 +163,10 @@ class BTCUSDMicroScalperPro:
         self.dormant_check_seconds = 60
         self.dormant_sleep_seconds = 15
         self.is_dormant = False
-        self.decision_interval_seconds = max(8, MICRO_SCALPING_CONFIG.get("cooldown_seconds", 6))
-        self.required_confidence = MICRO_SCALPING_CONFIG.get("required_confidence", 0.6)
+        default_cooldown = MICRO_SCALPING_CONFIG.get("cooldown_seconds", 6)
+        self.decision_interval_seconds = max(8, _env_int("DECISION_INTERVAL_SECONDS", default_cooldown))
+        self.required_confidence = _env_float("REQUIRED_CONFIDENCE", MICRO_SCALPING_CONFIG.get("required_confidence", 0.6))
+        self.max_spread_points = _env_float("MAX_SPREAD_POINTS", 100.0)
         self.log_purge_interval_minutes = int(os.getenv("LOG_PURGE_INTERVAL_MINUTES", "720"))
         self.log_purge_max_size_mb = float(os.getenv("LOG_PURGE_MAX_MB", "50"))
         self.log_purge_last_run: Optional[datetime] = None
@@ -674,7 +690,7 @@ class BTCUSDMicroScalperPro:
             symbol_info = mt5.symbol_info(symbol)
             if symbol_info and symbol_info.point:
                 spread_points = payload["spread"] / symbol_info.point
-                max_spread = 100.0
+                max_spread = self.max_spread_points
                 if spread_points > max_spread:
                     self.journal.log_event({
                         "type": "blocked",
