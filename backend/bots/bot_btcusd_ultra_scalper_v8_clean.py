@@ -658,6 +658,12 @@ class BTCUSDMicroScalperPro:
             size_mb = os.path.getsize(path) / (1024 * 1024)
             return size_mb >= self.log_purge_max_size_mb
 
+        def _size_mb(path: str) -> float:
+            try:
+                return os.path.getsize(path) / (1024 * 1024)
+            except Exception:
+                return 0.0
+
         def _truncate(path: str):
             try:
                 with open(path, "w", encoding="utf-8"):
@@ -676,9 +682,14 @@ class BTCUSDMicroScalperPro:
                 path = os.path.join("logs", name)
                 if _should_purge(path):
                     _truncate(path)
+                else:
+                    logging.info("ℹ️ Pas de purge (taille trop petite): %s (%.2f MB)", path, _size_mb(path))
 
         if _should_purge("process_manager.log"):
             _truncate("process_manager.log")
+        else:
+            if os.path.exists("process_manager.log"):
+                logging.info("ℹ️ Pas de purge (taille trop petite): %s (%.2f MB)", "process_manager.log", _size_mb("process_manager.log"))
 
         self.log_purge_last_run = now
 

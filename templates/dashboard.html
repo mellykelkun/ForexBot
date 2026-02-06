@@ -21,6 +21,9 @@
       color: var(--text);
       margin:0;
     }
+    body::-webkit-scrollbar { width: 10px; }
+    body::-webkit-scrollbar-thumb { background: #334155; border-radius: 8px; border: 2px solid transparent; background-clip: content-box; }
+    body::-webkit-scrollbar-track { background: #0b1020; }
     header {
       padding:16px 24px;
       background: linear-gradient(90deg, #0f172a 0%, #0b1220 100%);
@@ -70,6 +73,7 @@
     <button onclick="control('start')">Démarrer</button>
     <button class="secondary" onclick="control('stop')">Stop</button>
     <button class="secondary" onclick="control('restart')">Redémarrer</button>
+    <button class="secondary" onclick="refresh()">Actualiser</button>
     <button class="warn" onclick="purgeLogs()">Purger logs</button>
   </div>
 </header>
