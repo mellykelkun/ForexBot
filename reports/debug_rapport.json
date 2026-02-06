@@ -1,0 +1,69 @@
+{
+  "timestamp": "2025-11-06T04:00:44.494713",
+  "duration_total": "0:00:02.170315",
+  "results": {
+    "Connexion MT5": {
+      "success": true,
+      "duration": 0.019190311431884766,
+      "timestamp": "2025-11-06T04:00:42.343589"
+    },
+    "Configuration": {
+      "success": false,
+      "duration": 0.012733221054077148,
+      "timestamp": "2025-11-06T04:00:42.356322"
+    },
+    "Dashboard": {
+      "success": false,
+      "duration": 2.1197571754455566,
+      "timestamp": "2025-11-06T04:00:44.476079"
+    },
+    "Analyse Marché": {
+      "success": true,
+      "duration": 0.013971090316772461,
+      "timestamp": "2025-11-06T04:00:44.490050"
+    },
+    "Stratégie IA": {
+      "success": true,
+      "duration": 0.001703023910522461,
+      "timestamp": "2025-11-06T04:00:44.491753"
+    },
+    "Calcul Lots": {
+      "success": true,
+      "duration": 0.0,
+      "timestamp": "2025-11-06T04:00:44.491753"
+    },
+    "Trades Actifs": {
+      "success": true,
+      "duration": 0.002959728240966797,
+      "timestamp": "2025-11-06T04:00:44.494713"
+    }
+  },
+  "debug_data": {
+    "tests_executes": [],
+    "erreurs_detectees": [],
+    "performances": {},
+    "connexions": {
+      "mt5": {
+        "status": "OK",
+        "compte": 333966561,
+        "balance": 14.89,
+        "equity": 15.6,
+        "spread": 60.0
+      }
+    },
+    "configuration": {
+      "capital_mini": 10.0,
+      "spread_max": 0.1,
+      "risk_trade": 0.5,
+      "status": "WARNING"
+    },
+    "marche": {
+      "prix_actuel": 103351.35,
+      "volatilite": 0.05545740818446251,
+      "spread_actuel": 60.0,
+      "bougies_analysees": 50
+    },
+    "ia": {
+      "rsi": 40.64257028112406,
+      "conditions": {
+        "rsi_survendu": 

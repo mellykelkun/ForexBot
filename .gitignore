@@ -1,0 +1,48 @@
+# Secrets
+.env
+*.env
+secrets.json
+config_private.py
+
+# Logs
+*.log
+logs/
+bot_micro_scalper_v8_pro.log
+trading_events.jsonl
+structured_logs.json
+
+# Bases de données
+*.db
+*.sqlite
+*.sqlite3
+ai_training.db
+trading_dashboard.db
+
+# Modèles IA
+*.h5
+*.hdf5
+*.model
+models/
+evolutionary_brain_model.h5
+genetic_optimization_results.json
+model_weights/
+
+# Cache Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+pip-log.txt
+env/
+.venv/
+venv/
+.env/ 
+
+# IDE / Editor
+.vscode/
+.idea/
+
+# Système
+.DS_Store
+Thumbs.db
