@@ -60,6 +60,21 @@ class GroqService:
         try:
             response = requests.post(url, headers=headers, json=payload, timeout=timeout)
             if response.status_code != 200:
+                # Retry sans response_format si JSON échoue
+                if "json_validate_failed" in response.text:
+                    payload_no_format = {
+                        **payload,
+                        "messages": [
+                            {"role": "system", "content": system_prompt + "\nRetourne uniquement un JSON valide."},
+                            {"role": "user", "content": json.dumps(user_payload)},
+                        ],
+                    }
+                    payload_no_format.pop("response_format", None)
+                    retry = requests.post(url, headers=headers, json=payload_no_format, timeout=timeout)
+                    if retry.status_code == 200:
+                        data = retry.json()
+                        content = data["choices"][0]["message"]["content"]
+                        return self._safe_json_parse(content)
                 self.logger.warning(
                     "Groq error %s: %s", response.status_code, response.text[:200]
                 )

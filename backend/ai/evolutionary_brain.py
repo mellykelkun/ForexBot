@@ -2,6 +2,8 @@
 
 raise RuntimeError("evolutionary_brain désactivé: utiliser /api/decision")
 
+LEGACY_REMOVED = """
+
 import numpy as np
 
 def get_brain_instance():
@@ -1080,3 +1082,4 @@ def final_integration_test():
 
 if __name__ == "__main__":
     run_brain_server()
+"""

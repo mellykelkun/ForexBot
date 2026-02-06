@@ -19,6 +19,11 @@ import json
 os.environ['PYTHONIOENCODING'] = 'utf-8'
 import gc
 import psutil
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
 
 # ✅ NETTOYAGE MÉMOIRE AU DÉMARRAGE
 gc.collect()
@@ -285,6 +290,15 @@ class IntelligentProcessManager:
                 return False
             
             config = self.process_configs[process_name]
+
+            if process_name == "bot":
+                mt5_login = os.getenv("MT5_LOGIN")
+                mt5_password = os.getenv("MT5_PASSWORD")
+                mt5_server = os.getenv("MT5_SERVER")
+                if not mt5_login or not mt5_password or not mt5_server:
+                    logging.error("❌ MT5 non configuré: MT5_LOGIN, MT5_PASSWORD, MT5_SERVER requis")
+                    logging.error("💡 Ajoute-les dans tes variables d'environnement ou dans un fichier .env")
+                    return False
             
             # 🔧 CORRECTION : Verification du fichier (sauf lancement en module)
             script_path = config['command'][1] if len(config['command']) > 1 else None
@@ -308,7 +322,9 @@ class IntelligentProcessManager:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,  # Fusionner stdout et stderr
                 bufsize=1,
-                universal_newlines=False  # 🔧 IMPORTANT : Désactiver universal_newlines
+                text=True,
+                encoding="utf-8",
+                errors="replace"
             )
             
             self.processes[process_name] = process
@@ -347,19 +363,10 @@ class IntelligentProcessManager:
                         break
                     
                     if raw_output:
-                        # 🔧 CORRECTION : Gestion multi-encodage
-                        decoded_output = None
-                        
-                        # Essayer UTF-8 d'abord
-                        try:
-                            decoded_output = raw_output.decode('utf-8').strip()
-                        except UnicodeDecodeError:
-                            # Fallback vers latin-1
-                            try:
-                                decoded_output = raw_output.decode('latin-1').strip()
-                            except UnicodeDecodeError:
-                                # Dernier recours : ignorer les caractères problématiques
-                                decoded_output = raw_output.decode('utf-8', errors='ignore').strip()
+                        if isinstance(raw_output, bytes):
+                            decoded_output = raw_output.decode('utf-8', errors='replace').strip()
+                        else:
+                            decoded_output = str(raw_output).strip()
                         
                         # Filtrer et logger
                         if (decoded_output and 

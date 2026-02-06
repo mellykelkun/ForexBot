@@ -11,6 +11,7 @@ import argparse
 from datetime import datetime
 import threading
 import requests 
+from dotenv import load_dotenv
 
 # Ajout du chemin des modules
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -58,6 +59,7 @@ def parse_arguments():
     
 def setup_environment():
     """Configure l'environnement de trading"""
+    load_dotenv()
     print("=" * 60)
     print("🎯 BTCUSD MICRO SCALPER V8 - SYSTÈME PROFESSIONNEL")
     print("💰 MODE MICRO SCALPING AVANCÉ")
@@ -182,53 +184,35 @@ def initialize_trading_system(mode: str, strategy: str, risk: float, capital: fl
 
                 def ensure_connection(self):
                     """Vérifie et maintient la connexion MT5"""
-                        try:
-                            if not mt5.initialize():
-                                logger.warning("🔄 Reconnexion MT5...")
-                                if mt5.initialize() and mt5.login(mt5_login, mt5_password, mt5_server):
-                                    logger.info("✅ Reconnexion MT5 réussie")
-                                    return True
-                                return False
-                            return True
-                        except Exception as e:
-                            logger.error(f"❌ Erreur vérification connexion MT5: {e}")
+                    try:
+                        if not mt5.initialize():
+                            logger.warning("🔄 Reconnexion MT5...")
+                            if mt5.initialize() and mt5.login(mt5_login, mt5_password, mt5_server):
+                                logger.info("✅ Reconnexion MT5 réussie")
+                                return True
                             return False
-                            
-                    def shutdown(self):
-                        """Ferme la connexion MT5"""
-                        try:
-                            mt5.shutdown()
-                            logger.info("🔌 Connexion MT5 fermée")
-                        except Exception as e:
-                            logger.error(f"❌ Erreur fermeture MT5: {e}")
-                
-                mt5_engine = RealMT5Engine()
-                
-            except ImportError:
-                logger.error("❌ MetaTrader5 non installé - Exécute: 'pip install MetaTrader5'")
-                raise
-            except Exception as e:
-                logger.error(f"❌ Erreur connexion MT5 réelle: {e}")
-                logger.error("💡 Vérifie tes identifiants MT5 et que la plateforme est ouverte")
-                raise
-        
-        else:
-            # Mode PAPER/BACKTEST - simulation
-            logger.info("🔗 Mode simulation MT5 activé (pas de connexion réelle)")
-            
-            # Créer un objet simulation pour MT5
-            class MockMT5Engine:
-                def __init__(self):
-                    self.simulation_mode = True
-                    self.connected = True
-                    
-                def ensure_connection(self):
-                    return True
-                    
+                        return True
+                    except Exception as e:
+                        logger.error(f"❌ Erreur vérification connexion MT5: {e}")
+                        return False
+
                 def shutdown(self):
-                    logger.info("🔌 Simulation MT5 arrêtée")
-            
-            mt5_engine = MockMT5Engine()
+                    """Ferme la connexion MT5"""
+                    try:
+                        mt5.shutdown()
+                        logger.info("🔌 Connexion MT5 fermée")
+                    except Exception as e:
+                        logger.error(f"❌ Erreur fermeture MT5: {e}")
+
+            mt5_engine = RealMT5Engine()
+
+        except ImportError:
+            logger.error("❌ MetaTrader5 non installé - Exécute: 'pip install MetaTrader5'")
+            raise
+        except Exception as e:
+            logger.error(f"❌ Erreur connexion MT5 réelle: {e}")
+            logger.error("💡 Vérifie tes identifiants MT5 et que la plateforme est ouverte")
+            raise
         
         logger.info("✅ Système de trading initialisé avec succès")
         return config, mt5_engine
@@ -243,24 +227,9 @@ def start_exit_system_monitoring(guardian_system, interval_seconds=30):
         logger = get_logger()
         while True:
             try:
-                # ✅ CORRECTION: Import sécurisé à l'intérieur de la boucle
-                try:
-                    from backend.ai import get_brain_instance
-                    brain = get_brain_instance()
-                    
-                    # Statistiques du système
-                    exit_stats = {
-                        'exit_memory_size': getattr(brain, 'exit_memory_size', 0),
-                        'total_exit_experiences': len(getattr(brain, 'exit_experiences', [])),
-                        'timestamp': datetime.now().isoformat()
-                    }
-                    
-                    # Log périodique
-                    if exit_stats['exit_memory_size'] > 0 and exit_stats['exit_memory_size'] % 10 == 0:
-                        logger.info(f"📊 Monitoring Sortie - Mémoire: {exit_stats['exit_memory_size']} expériences")
-                        
-                except ImportError as e:
-                    logger.warning(f"⚠️ Brain non accessible pour monitoring: {e}")
+                ok = check_ai_engine_connection()
+                if not ok:
+                    logger.warning("⚠️ IA Engine indisponible (monitoring)")
                 
                 # Attendre avant prochaine vérification
                 threading.Event().wait(interval_seconds)
@@ -278,16 +247,15 @@ def start_exit_system_monitoring(guardian_system, interval_seconds=30):
 def start_ai_engine():
     """Démarre le moteur IA adaptatif"""
     try:
-        from backend.ai import AdaptiveAIEngine
+        from backend.ai.adaptive_engine import run_ai_server
         
         logger = get_logger()
-        logger.info("🧠 Démarrage du moteur IA adaptatif...")
+        logger.info("🧠 Démarrage du moteur IA Groq...")
         
-        ai_engine = AdaptiveAIEngine()
-        ai_engine.start()
-        
-        logger.info("✅ Moteur IA adaptatif démarré")
-        return ai_engine
+        thread = threading.Thread(target=run_ai_server, daemon=True)
+        thread.start()
+        logger.info("✅ Moteur IA Groq démarré")
+        return thread
         
     except Exception as e:
         get_logger().error(f"❌ Erreur démarrage moteur IA: {e}")
@@ -315,10 +283,10 @@ def main():
     try:
         # ✅ AJOUT: Vérification des imports critiques
         try:
-            from backend.bots.bot_btcusd_ultra_scalper_v8_robus import BTCUSDMicroScalperPro
+            from backend.bots.bot_btcusd_ultra_scalper_v8_clean import BTCUSDMicroScalperPro
         except ImportError as e:
             logger.error(f"❌ Impossible d'importer le bot principal: {e}")
-            logger.error("💡 Vérifiez que le fichier backend/bots/bot_btcusd_ultra_scalper_v8_robus.py existe")
+            logger.error("💡 Vérifiez que le fichier backend/bots/bot_btcusd_ultra_scalper_v8_clean.py existe")
             return 1
         
         # ✅ CORRECTION: Sortie intelligente ACTIVÉE par défaut
@@ -357,8 +325,8 @@ def main():
         # Démarrage moteur IA si demandé
         ai_engine = None
         if args.ai_engine:
-            logger.info("🧠 Démarrage du moteur IA adaptatif...")
-            ai_engine = start_ai_engine()
+            logger.info("🧠 Moteur IA: externe (lanceur) — vérification connexion...")
+            ai_engine = check_ai_engine_connection()
             if ai_engine:
                 logger.info("✅ Moteur IA adaptatif opérationnel")
             else:

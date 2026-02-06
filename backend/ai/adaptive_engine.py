@@ -19,16 +19,16 @@ class AdaptiveAIEngine:
             raise RuntimeError("GROQ_API_KEY manquant ou non configuré")
 
         prompt = (
-            "Tu es un moteur de trading autonome. Retourne un JSON strict. "
-            "Si context='entry': action doit être BUY, SELL ou HOLD. "
-            "Si action BUY/SELL, inclure entry_price, sl_price, tp_price. "
-            "Si context='exit': action doit être EXIT ou HOLD. "
-            "Toujours inclure confidence (0..1) et reason."
+            "Tu es un moteur de trading autonome. Retourne uniquement un JSON strict (pas de texte). "
+            "Clés obligatoires: action, confidence, reason. "
+            "Si context='entry': action ∈ {BUY, SELL, HOLD}. "
+            "Si action BUY/SELL: inclure entry_price, sl_price, tp_price (nombres). "
+            "Si context='exit': action ∈ {EXIT, HOLD}."
         )
 
         result = self.groq.chat_json(
-            system=prompt,
-            user=payload,
+            system_prompt=prompt,
+            user_payload=payload,
         )
 
         if not isinstance(result, dict):
@@ -53,6 +53,11 @@ def index():
 @app.route("/health")
 def health():
     return jsonify({"status": "healthy", "service": "AI Engine"})
+
+
+@app.route("/api/health")
+def api_health():
+    return health()
 
 
 @app.route("/api/decision", methods=["POST"])
@@ -80,7 +85,19 @@ def run_ai_server():
     print("[IA] MOTEUR IA GROQ - AUTONOME")
     print("[WEB] Serveur: http://localhost:5003")
     print("=" * 50)
-    app.run(host="0.0.0.0", port=5003, debug=False, use_reloader=False)
+    try:
+        from waitress import serve
+        serve(app, host="0.0.0.0", port=5003)
+        return
+    except Exception:
+        pass
+
+    try:
+        from wsgiref.simple_server import make_server
+        httpd = make_server("0.0.0.0", 5003, app)
+        httpd.serve_forever()
+    except Exception:
+        app.run(host="0.0.0.0", port=5003, debug=False, use_reloader=False)
 
 
 if __name__ == "__main__":

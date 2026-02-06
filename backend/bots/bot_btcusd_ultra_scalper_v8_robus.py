@@ -1,28 +1,20 @@
-# bot_btcusd_ultra_scalper_v8_robus.py
 """
-BTCUSD MICRO SCALPER V8 PRO - Version Professionnelle
-Avec IA adaptative, sécurité renforcée et gestion avancée
+BTCUSD MICRO SCALPER V8 PRO - Version stable (IA uniquement)
+Décision d'entrée/sortie via /api/decision (Groq)
 """
 
-import time
-import math
-import logging
 import argparse
-import numpy as np
-import pandas as pd
-import MetaTrader5 as mt5
-from datetime import datetime, timedelta
-from typing import Optional, Dict, Any, List, Tuple
-from collections import deque
-import sqlite3
-import threading
-import traceback
-import sys
-import os
-import requests
-import json
 import hashlib
-import random
+import json
+import logging
+import os
+import time
+from collections import deque
+from datetime import datetime
+from typing import Any, Dict, Optional
+
+import MetaTrader5 as mt5
+import requests
 
 from backend.config.config_micro_scalping_pro import (
     SYMBOLS_CONFIG,
@@ -30,955 +22,412 @@ from backend.config.config_micro_scalping_pro import (
     SECURITY_CONFIG,
 )
 
-LEGACY_CODE = '''
 
-# =============== RÉSILIENCE RÉSEAU ===============
-class NetworkResilienceManager:
-    """Gestionnaire de résilience réseau avec reprise automatique"""
-    
-    def __init__(self, max_retries=3, backoff_factor=0.5):
-        self.max_retries = max_retries
-        self.backoff_factor = backoff_factor
-        self.consecutive_failures = 0
-    
-    def execute_with_retry(self, operation, operation_name="", *args, **kwargs):
-        """Exécute une opération avec reprise automatique"""
-        for attempt in range(self.max_retries):
-            try:
-                result = operation(*args, **kwargs)
-                self.consecutive_failures = 0
-                return result
-            except (requests.exceptions.ConnectionError, 
-                    requests.exceptions.Timeout,
-                    mt5.MT5Error,
-                    Exception) as e:
-                
-                self.consecutive_failures += 1
-                wait_time = self.backoff_factor * (2 ** attempt)
-                
-                logging.warning(
-                    f"⚠️ Tentative {attempt + 1}/{self.max_retries} échouée pour {operation_name}. "
-                    f"Attente {wait_time}s - Erreur: {str(e)[:100]}..."
-                )
-                time.sleep(wait_time)
-        
-        logging.error(f"❌ Échec après {self.max_retries} tentatives pour {operation_name}")
+AI_DECISION_URL = os.getenv("AI_ENGINE_URL", "http://127.0.0.1:5003/api/decision")
+AI_HEALTH_URL = os.getenv("AI_ENGINE_HEALTH_URL", "http://127.0.0.1:5003/health")
+
+DEFAULT_RISK = {
+    "max_trades_per_hour": 12,
+    "max_trades_per_day": 120,
+    "min_seconds_between_trades": 5,
+    "max_daily_loss_pct": 2.0,
+    "max_slippage_points": 25,
+    "max_latency_ms": 800,
+    "commission_per_lot": 0.0,
+    "simulated_slippage_points": 5,
+}
+
+
+class TradeJournal:
+    def __init__(self, log_path: str = "logs/trade_journal.jsonl"):
+        self.log_path = log_path
+        os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
+        self.last_hash = self._load_last_hash()
+
+    def _load_last_hash(self) -> str:
+        if not os.path.exists(self.log_path):
+            return ""
+        try:
+            with open(self.log_path, "rb") as f:
+                lines = f.read().splitlines()
+                if not lines:
+                    return ""
+                last = json.loads(lines[-1].decode("utf-8"))
+                return last.get("hash", "")
+        except Exception:
+            return ""
+
+    def log_event(self, event: Dict[str, Any]):
+        payload = {"timestamp": datetime.utcnow().isoformat(), **event, "prev_hash": self.last_hash}
+        raw = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        payload["hash"] = digest
+        with open(self.log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        self.last_hash = digest
+
+
+class RiskManager:
+    def __init__(self, starting_balance: float, risk_cfg: Dict[str, Any]):
+        self.starting_balance = starting_balance
+        self.cfg = {**DEFAULT_RISK, **(risk_cfg or {})}
+        self.trade_times = deque(maxlen=1000)
+        self.last_trade_time: Optional[datetime] = None
+
+    def _prune(self, now: datetime):
+        while self.trade_times and (now - self.trade_times[0]).total_seconds() > 24 * 3600:
+            self.trade_times.popleft()
+
+    def can_trade(self, now: datetime, current_balance: float) -> (bool, str):
+        self._prune(now)
+
+        if self.last_trade_time:
+            dt = (now - self.last_trade_time).total_seconds()
+            if dt < self.cfg["min_seconds_between_trades"]:
+                return False, f"Anti-sur-trading: {dt:.1f}s < {self.cfg['min_seconds_between_trades']}s"
+
+        trades_last_hour = [t for t in self.trade_times if (now - t).total_seconds() <= 3600]
+        if len(trades_last_hour) >= self.cfg["max_trades_per_hour"]:
+            return False, "Limite trades/heure atteinte"
+
+        if len(self.trade_times) >= self.cfg["max_trades_per_day"]:
+            return False, "Limite trades/jour atteinte"
+
+        max_loss = -abs(self.starting_balance) * (self.cfg["max_daily_loss_pct"] / 100.0)
+        pnl = current_balance - self.starting_balance
+        if pnl <= max_loss:
+            return False, "Limite de perte journalière atteinte"
+
+        return True, "OK"
+
+    def record_trade(self, when: datetime):
+        self.trade_times.append(when)
+        self.last_trade_time = when
+
+
+class BTCUSDMicroScalperPro:
+    def __init__(self):
+        self.real_trading = False
+        self.account = None
+        self.active_symbols = [s for s, cfg in SYMBOLS_CONFIG.items() if cfg.get("enabled")]
+        self.request_timeout = SECURITY_CONFIG.get("request_timeout", 5)
+        self.last_trade_time: Optional[datetime] = None
+        self.journal = TradeJournal()
+        self.risk_manager: Optional[RiskManager] = None
+        self.dormant_after_minutes = 30
+        self.dormant_check_seconds = 60
+        self.dormant_sleep_seconds = 15
+        self.is_dormant = False
+
+    def initialize(self, real_trading: bool = False, mode: str = "MICRO") -> bool:
+        self.real_trading = real_trading
+        if not mt5.initialize():
+            logging.error("❌ MT5 non initialisé")
+            return False
+        self.account = mt5.account_info()
+        if not self.account:
+            logging.error("❌ Impossible de récupérer le compte MT5")
+            return False
+        if not self.active_symbols:
+            logging.error("❌ Aucun symbole actif")
+            return False
+        self.risk_manager = RiskManager(self.account.balance, {})
+        logging.info("✅ MT5 initialisé | Mode réel: %s", self.real_trading)
+        return True
+
+    def verify_connection(self) -> bool:
+        try:
+            return mt5.terminal_info() is not None and mt5.account_info() is not None
+        except Exception:
+            return False
+
+    def _get_symbol_tick(self, symbol: str) -> Optional[Dict[str, Any]]:
+        tick = mt5.symbol_info_tick(symbol)
+        if not tick:
+            return None
+        spread = (tick.ask - tick.bid) if tick.ask and tick.bid else 0
+        return {
+            "bid": tick.bid,
+            "ask": tick.ask,
+            "spread": spread,
+            "volume": tick.volume,
+            "time": tick.time,
+        }
+
+    def _build_payload(self, symbol: str) -> Optional[Dict[str, Any]]:
+        tick = self._get_symbol_tick(symbol)
+        if not tick:
+            return None
+        return {
+            "context": "entry",
+            "symbol": symbol,
+            "bid": tick["bid"],
+            "ask": tick["ask"],
+            "spread": tick["spread"],
+            "volume": tick["volume"],
+            "timestamp": datetime.now().isoformat(),
+            "risk": MICRO_SCALPING_CONFIG.get("risk_per_trade", 0.5),
+        }
+
+    def _request_ai_decision(self, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        try:
+            resp = requests.post(
+                AI_DECISION_URL,
+                json=payload,
+                timeout=self.request_timeout,
+            )
+            if resp.status_code != 200:
+                logging.warning("⚠️ IA indisponible: %s", resp.text)
+                return None
+            data = resp.json()
+            if not isinstance(data, dict):
+                return None
+            return data
+        except Exception as e:
+            logging.warning("⚠️ Erreur IA: %s", e)
+            return None
+
+    def executer_strategie_micro_ia(self) -> Optional[Dict[str, Any]]:
+        for symbol in self.active_symbols:
+            payload = self._build_payload(symbol)
+            if not payload:
+                continue
+            decision = self._request_ai_decision(payload)
+            if not decision:
+                continue
+            action = decision.get("action")
+            if action in ("BUY", "SELL"):
+                self.journal.log_event({"type": "decision", "symbol": symbol, "decision": decision})
+                decision["symbol"] = symbol
+                return decision
         return None
 
-# =============== MÉTRIQUES AVANCÉES ===============
-                return False, f"Lot trop élevé: {proposed_lot:.4f} > {max_allowed_lot:.4f}"
-            
-            # Vérification timing (anti-sur trading)
-            if self.last_trade_time:
-                time_since_last = (datetime.now() - self.last_trade_time).total_seconds()
-                if time_since_last < 5:  # 5 secondes minimum entre trades
-                    return False, f"Temps entre trades trop court: {time_since_last:.1f}s"
-            
-            return True, "Éligible"
-            
-        except Exception as e:
-            return False, f"Erreur vérification sécurité: {e}"
-    
-    def record_trade_result(self, profit: float, capital: float):
-        """Enregistre le résultat d'un trade pour suivi sécurité"""
-                indicateurs, candle_analysis, support_resistance, tick_data
-            )
-            
-            # 5. Décision finale basée principalement sur les chandeliers
-            decision = self.prendre_decision_finale(
-                indicateurs, candle_analysis, support_resistance, combined_confidence, tick_data
-            )
-            
-            # 6. Validation du signal avec critères stricts
-            if not self.valider_signal(decision, indicateurs, candle_analysis, support_resistance):
-                return {'valide': False, 'raison': 'Signal non validé'}
-            
-            return {
-                'valide': True,
-                'indicateurs': indicateurs,
-                'candle_analysis': candle_analysis,
-                'support_resistance': support_resistance,
-                'combined_confidence': combined_confidence,
-                'decision': decision,
-                'timestamp': datetime.now(),
-                'qualite_signal': self.calculer_qualite_signal(decision, candle_analysis, support_resistance)
-            }
-            
-        except Exception as e:
-            self.gestionnaire_erreurs.logger_erreur(e, "Analyse marché complète")
-            return {'valide': False, 'raison': 'Erreur analyse'}
-            
-def analyser_support_resistance(self, df: pd.DataFrame) -> Dict:
-    """Analyse les niveaux de support et résistance"""
-    try:
-        if len(df) < 20:
-            return {'supports': [], 'resistances': [], 'current_position': 0.5}
-        
-        highs = df['high'].values
-        lows = df['low'].values
-        closes = df['close'].values
-        
-        # Points pivots
-        pivot = (highs[-1] + lows[-1] + closes[-1]) / 3
-        r1 = 2 * pivot - lows[-1]
-        s1 = 2 * pivot - highs[-1]
-        
-        # Niveaux de support/résistance dynamiques
-        resistance_levels = []
-        support_levels = []
-        
-        # Résistances (highs récents)
-        for i in range(max(0, len(highs)-10), len(highs)):
-            if highs[i] == max(highs[max(0, i-5):min(len(highs), i+5)]):
-                resistance_levels.append(highs[i])
-        
-        # Supports (lows récents)
-        for i in range(max(0, len(lows)-10), len(lows)):
-            if lows[i] == min(lows[max(0, i-5):min(len(lows), i+5)]):
-                support_levels.append(lows[i])
-        
-        # Position actuelle par rapport aux niveaux
-        current_price = closes[-1]
-        if resistance_levels and support_levels:
-            price_range = max(resistance_levels) - min(support_levels)
-            if price_range > 0:
-                current_position = (current_price - min(support_levels)) / price_range
-            else:
-                current_position = 0.5
-        else:
-            current_position = 0.5
-        
-        return {
-            'supports': sorted(list(set(support_levels)))[-3:],  # 3 supports les plus proches
-            'resistances': sorted(list(set(resistance_levels)))[:3],  # 3 résistances les plus proches
-            'pivot': pivot,
-            'r1': r1,
-            's1': s1,
-            'current_position': current_position
-        }
-        
-    except Exception as e:
-        logging.error(f"❌ Erreur analyse support/résistance: {e}")
-        return {'supports': [], 'resistances': [], 'current_position': 0.5}
-
-    def combiner_signaux_avances(self, indicateurs: Dict, candle_analysis: Dict, support_resistance: Dict, tick_data: Dict) -> Dict:
-        """Combine intelligemment tous les signaux avec POIDS CHANDELIERS MAJORITAIRE"""
-        
-        
-        # Renforcer la confiance si haute cohérence
-        if coherence >= 0.75:  # 75% des signaux alignés
-            return 1.2  # +20% de confiance
-        elif coherence >= 0.5:  # 50% des signaux alignés
-            return 1.0
-        else:
-            return 0.7  # -30% de confiance
-
-    def prendre_decision_finale(self, indicateurs: Dict, candle_analysis: Dict, combined: Dict, tick_data: Dict) -> Dict:
-        """Prend la décision finale avec gestion de risque AVANCÉE"""
-        score_total = combined['score_total']
-        confiance = combined['confiance_finale']
-        
-        # SEUIL DE CONFIANCE DYNAMIQUE
-        confiance_minimale = 0.65  # Augmenté pour plus de précision
-        
-        if confiance < confiance_minimale:
-            return {'action': 'HOLD', 'confiance': confiance, 'raison': 'Confiance insuffisante'}
-        
-        # DÉCISION BASÉE SUR LE SCORE TOTAL
-        prix_entree = indicateurs['price']
-        volatilite = tick_data.get('volatilite', 0.05) / 100.0  # Conversion en décimal
-        
-        # CALCUL SL/TP INTELLIGENT basé sur la volatilité et les chandeliers
-        if score_total > 0.4:  # Signal haussier fort
-            direction = "BUY"
-            prix_sl, prix_tp, distance_stop = self.calculer_niveaux_avances(
-                direction, prix_entree, volatilite, candle_analysis, 'BULLISH'
-            )
-            
-        elif score_total > 0.2:  # Signal haussier modéré
-            direction = "BUY"
-            prix_sl, prix_tp, distance_stop = self.calculer_niveaux_avances(
-                direction, prix_entree, volatilite, candle_analysis, 'BULLISH'
-            )
-            confiance *= 0.8  # Réduction confiance pour signaux modérés
-            
-        elif score_total < -0.4:  # Signal baissier fort
-            direction = "SELL"
-            prix_sl, prix_tp, distance_stop = self.calculer_niveaux_avances(
-                direction, prix_entree, volatilite, candle_analysis, 'BEARISH'
-            )
-            
-        elif score_total < -0.2:  # Signal baissier modéré
-            direction = "SELL"
-            prix_sl, prix_tp, distance_stop = self.calculer_niveaux_avances(
-                direction, prix_entree, volatilite, candle_analysis, 'BEARISH'
-            )
-            confiance *= 0.8  # Réduction confiance pour signaux modérés
-            
-        else:
-            return {'action': 'HOLD', 'confiance': confiance, 'raison': 'Signal trop faible'}
-        
-        # RAISON DU SIGNAL détaillée
-        raison = self.generer_raison_signal(candle_analysis, indicateurs, score_total)
-        
-        # Calcul ratio risque/rendement
-        ratio_rr = abs(prix_tp - prix_entree) / abs(prix_entree - prix_sl)
-        
-        return {
-            'action': direction,
-            'confiance': confiance,
-            'prix_entree': prix_entree,
-            'prix_tp': prix_tp,
-            'prix_sl': prix_sl,
-            'distance_stop': distance_stop,
-            'ratio_risque_rendement': ratio_rr,
-            'raison': raison,
-            'timestamp': datetime.now().isoformat()
-        }
-
-    def calculer_niveaux_avances(self, direction: str, prix_entree: float, volatilite: float, 
-                                candle_analysis: Dict, biais: str) -> Tuple[float, float, float]:
-        """Calcule les niveaux SL/TP de manière intelligente"""
-        
-        # BASE : Stop basé sur la volatilité
-        distance_stop_base = prix_entree * volatilite * 2.0
-        
-        # AJUSTEMENT selon la force des chandeliers
-        force_chandeliers = candle_analysis.get('signal_strength', 0.5)
-        
-        # Stop plus serré si forts patterns de chandeliers
-        if force_chandeliers > 0.7:
-            multiplicateur_stop = 0.7  # -30% de stop
-            multiplicateur_tp = 2.5    # +25% de TP
-        elif force_chandeliers > 0.5:
-            multiplicateur_stop = 0.85 # -15% de stop
-            multiplicateur_tp = 2.2    # +10% de TP
-        else:
-            multiplicateur_stop = 1.0  # Stop normal
-            multiplicateur_tp = 2.0    # TP normal
-        
-        distance_stop = distance_stop_base * multiplicateur_stop
-        
-        if direction == "BUY":
-            prix_sl = prix_entree - distance_stop
-            prix_tp = prix_entree + (distance_stop * multiplicateur_tp)
-        else:
-            prix_sl = prix_entree + distance_stop
-            prix_tp = prix_entree - (distance_stop * multiplicateur_tp)
-        
-        return prix_sl, prix_tp, distance_stop
-
-    def generer_raison_signal(self, candle_analysis: Dict, indicateurs: Dict, score_total: float) -> str:
-        """Génère une raison détaillée du signal"""
-        raisons = []
-        
-        # Patterns de chandeliers
-            return {
-                'rsi': 50,
-                'macd_histogram': 0,
-                'bb_position': 0.5,
-                'price': 0,
-                'bb_upper': 0,
-                'bb_lower': 0,
-                'sma': 0,
-                'atr': 0.01
-            }
-    
-    def analyser_tendance_ia(self, df: pd.DataFrame, indicateurs: Dict) -> str:
-        """Analyse la tendance avec approche IA multi-critères"""
-        rsi = indicateurs['rsi']
-        macd_hist = indicateurs['macd_histogram']
-        bb_pos = indicateurs['bb_position']
-        prix_actuel = indicateurs['price']
-        sma = indicateurs['sma']
-        
-        # Score de tendance amélioré
-        score = 0
-        
-        # RSI > 50 = tendance haussière
-        if rsi > 50: 
-            score += 1
-        # MACD positif = momentum haussier
-        if macd_hist > 0: 
-            score += 1
-        # Prix au-dessus de la SMA = tendance haussière
-        if prix_actuel > sma: 
-            score += 1
-        # Position dans les Bollinger Bands
-        if bb_pos > 0.5: 
-            score += 0.5
-        else:
-            score -= 0.5
-        
-        if score >= 2.5:
-            return "HAUSSIERE_FORTE"
-        elif score >= 1.5:
-            return "HAUSSIERE"
-        elif score <= 0.5:
-            return "BAISSIERE_FORTE"
-        elif score <= 1.0:
-            return "BAISSIERE"
-        else:
-            return "NEUTRE"
-    
-    def calculer_confidence_ia(self, indicateurs: Dict, tick_data: Dict) -> float:
-        """Calcule la confiance avec IA adaptative multi-facteurs"""
-        confiance_base = 0.5
-        
-        # Facteurs de confiance RSI
-        rsi = indicateurs['rsi']
-        if 30 <= rsi <= 70:  # Zone neutre = plus fiable
-            confiance_base += 0.2
-        elif rsi < 20 or rsi > 80:  # Zones extrêmes = moins fiable
-            confiance_base -= 0.2
-        else:  # Zones intermédiaires
-            confiance_base += 0.1
-            
-        # Facteur volatilité
-        volatilite = tick_data.get('volatilite', 0.05)
-        if 0.03 <= volatilite <= 0.08:  # Volatilité idéale
-            confiance_base += 0.1
-        elif volatilite > 0.15:  # Volatilité trop élevée
-            confiance_base -= 0.2
-        elif volatilite < 0.02:  # Volatilité trop faible
-            confiance_base -= 0.1
-            
-        # Facteur tendance
-        tendance = self.analyser_tendance_ia(pd.DataFrame(), indicateurs)
-        if "FORTE" in tendance:
-            confiance_base += 0.1
-            
-        return max(0.1, min(confiance_base, 1.0))
-
-# =============== GESTIONNAIRE D'ERREURS AVANCÉ ===============
-class GestionnaireErreursAvance:
-    """Gestionnaire d'erreurs avancé avec monitoring"""
-    
-    def __init__(self):
-        self.erreurs_recentes = deque(maxlen=20)
-        self.erreurs_critiques = 0
-        self.derniere_erreur = None
-        self.alertes_envoyees = []
-    
-    def logger_erreur(self, erreur: Exception, contexte: str = "", niveau: str = "ERROR"):
-        """Log une erreur avec contexte avancé"""
-        message_erreur = f"❌ ERREUR {contexte}: {str(erreur)}"
-        stack_trace = traceback.format_exc()
-        
-        if niveau == "ERROR":
-            logging.error(message_erreur)
-            logging.debug(f"📋 Stack trace: {stack_trace}")
-            self.erreurs_critiques += 1
-        elif niveau == "WARNING":
-            logging.warning(message_erreur)
-        
-        erreur_data = {
-            'timestamp': datetime.now().isoformat(),
-            'contexte': contexte,
-            'message': str(erreur),
-            'type': type(erreur).__name__,
-            'niveau': niveau,
-            'stack_trace': stack_trace
-        }
-        self.erreurs_recentes.append(erreur_data)
-        self.derniere_erreur = erreur_data
-        
-        # Alerte si trop d'erreurs
-        if self.erreurs_critiques >= 5:
-            self.envoyer_alerte_critique()
-    
-    def envoyer_alerte_critique(self):
-        """Envoie une alerte critique"""
-        if "trop_erreurs" not in self.alertes_envoyees:
-            logging.critical("🚨 ALERTE CRITIQUE: Trop d'erreurs détectées!")
-            self.alertes_envoyees.append("trop_erreurs")
-    
-    def get_statut_erreurs(self) -> Dict[str, Any]:
-        """Retourne le statut complet des erreurs"""
-        return {
-            'erreurs_critiques': self.erreurs_critiques,
-            'derniere_erreur': self.derniere_erreur,
-            'total_erreurs': len(self.erreurs_recentes),
-            'alertes_activees': len(self.alertes_envoyees),
-            'sante_bot': 'EXCELLENTE' if self.erreurs_critiques == 0 else 
-                         'MOYENNE' if self.erreurs_critiques < 3 else 'CRITIQUE'
-        }
-
-# =============== ANALYSEUR CHANDELIERS AVANCÉ ===============
-class AdvancedCandlestickAnalyzer:
-    """Analyseur avancé des chandeliers japonais avec détection multi-timeframe"""
-    
-    def __init__(self):
-        self.patterns_strength = {
-            # Fort retournement haussier (confiance 80-95%)
-            "BULLISH_ENGULFING": 0.95,
-            "MORNING_STAR": 0.90,
-            "PIERCING_LINE": 0.85,
-            "THREE_WHITE_SOLDIERS": 0.88,
-            "HAMMER": 0.80,
-            "INVERTED_HAMMER": 0.75,
-            "BULLISH_KICKING": 0.85,
-            
-            # Fort retournement baissier (confiance 80-95%)
-            "BEARISH_ENGULFING": 0.95,
-            "EVENING_STAR": 0.90,
-            "DARK_CLOUD_COVER": 0.85,
-            "THREE_BLACK_CROWS": 0.88,
-            "SHOOTING_STAR": 0.80,
-            "HANGING_MAN": 0.75,
-            "BEARISH_KICKING": 0.85,
-            
-            # Signaux moyens (confiance 60-75%)
-            "BULLISH_HARAMI": 0.70,
-            "BEARISH_HARAMI": 0.70,
-            "BULLISH_DOJI_STAR": 0.65,
-            "BEARISH_DOJI_STAR": 0.65,
-            
-            # Signaux faibles (confiance 40-50%)
-            "DOJI": 0.40,
-            "SPINNING_TOP": 0.30,
-            "LONG_LEGGED_DOJI": 0.45,
-            "DRAGONFLY_DOJI": 0.50,
-            "GRAVESTONE_DOJI": 0.50
-        }
-        
-        self.volume_analyzer = VolumeAnalyzer()
-        
-    def detect_all_patterns(self, df: pd.DataFrame) -> List[Dict]:
-            total_range = high_prices[i] - low_prices[i]
-            
-            if total_range > 0 and body / total_range < 0.1:  # Très petit corps
-                lower_wick = min(open_prices[i], close_prices[i]) - low_prices[i]
-                upper_wick = high_prices[i] - max(open_prices[i], close_prices[i])
-                
-                # Dragonfly Doji (Haussier)
-                if upper_wick == 0 and lower_wick > total_range * 0.6:
-                    patterns.append({
-                        'name': 'DRAGONFLY_DOJI',
-                        'strength': self.patterns_strength['DRAGONFLY_DOJI'],
-                        'direction': 'BULLISH',
-                        'index': i,
-                        'timestamp': datetime.now()
-                    })
-                
-                # Gravestone Doji (Baissier)
-                elif lower_wick == 0 and upper_wick > total_range * 0.6:
-                    patterns.append({
-                        'name': 'GRAVESTONE_DOJI',
-                        'strength': self.patterns_strength['GRAVESTONE_DOJI'],
-                        'direction': 'BEARISH',
-                        'index': i,
-                        'timestamp': datetime.now()
-                    })
-                
-                # Long-Legged Doji (Neutre)
-                elif lower_wick > total_range * 0.3 and upper_wick > total_range * 0.3:
-                    patterns.append({
-                        'name': 'LONG_LEGGED_DOJI',
-                        'strength': self.patterns_strength['LONG_LEGGED_DOJI'],
-                        'direction': 'NEUTRAL',
-                        'index': i,
-                        'timestamp': datetime.now()
-                    })
-                
-                # Doji standard
-                else:
-                    patterns.append({
-                        'name': 'DOJI',
-                        'strength': self.patterns_strength['DOJI'],
-                        'direction': 'NEUTRAL',
-                        'index': i,
-                        'timestamp': datetime.now()
-                    })
-        
-        return patterns
-    
-    def _detect_three_patterns(self, open_prices, high_prices, low_prices, close_prices, volumes):
-        """Détecte les patterns à trois bougies"""
-        patterns = []
-        
-        for i in range(2, len(open_prices)):
-            # Three White Soldiers (Haussier)
-            if (close_prices[i-2] > open_prices[i-2] and
-                close_prices[i-1] > open_prices[i-1] and
-                close_prices[i] > open_prices[i] and
-                close_prices[i-1] > close_prices[i-2] and
-                close_prices[i] > close_prices[i-1] and
-                open_prices[i-1] > open_prices[i-2] and
-                open_prices[i] > open_prices[i-1]):
-                
-                patterns.append({
-                    'name': 'THREE_WHITE_SOLDIERS',
-                    'strength': self.patterns_strength['THREE_WHITE_SOLDIERS'],
-                    'direction': 'BULLISH',
-                    'index': i,
-                    'timestamp': datetime.now()
-                })
-            
-            # Three Black Crows (Baissier)
-            elif (close_prices[i-2] < open_prices[i-2] and
-                  close_prices[i-1] < open_prices[i-1] and
-                  close_prices[i] < open_prices[i] and
-                  close_prices[i-1] < close_prices[i-2] and
-                  close_prices[i] < close_prices[i-1] and
-                  open_prices[i-1] < open_prices[i-2] and
-                  open_prices[i] < open_prices[i-1]):
-                  
-                patterns.append({
-                    'name': 'THREE_BLACK_CROWS',
-                    'strength': self.patterns_strength['THREE_BLACK_CROWS'],
-                    'direction': 'BEARISH',
-                    'index': i,
-                    'timestamp': datetime.now()
-                })
-        
-        return patterns
-    
-    def _detect_kicking_patterns(self, open_prices, close_prices):
-        """Détecte les patterns de kick"""
-        patterns = []
-        
-        for i in range(1, len(open_prices)):
-            prev_body = close_prices[i-1] - open_prices[i-1]
-            curr_body = close_prices[i] - open_prices[i]
-            
-            # Bullish Kicking
-            if (prev_body < 0 and  # Bougie baissière précédente
-                curr_body > 0 and  # Bougie haussière actuelle
-                open_prices[i] > open_prices[i-1] and  # Gap haussier
-                abs(curr_body) > abs(prev_body) * 1.2):  # Corps plus grand
-                
-                patterns.append({
-                    'name': 'BULLISH_KICKING',
-                    'strength': self.patterns_strength['BULLISH_KICKING'],
-                    'direction': 'BULLISH',
-                    'index': i,
-                    'timestamp': datetime.now()
-                })
-            
-            # Bearish Kicking  
-            elif (prev_body > 0 and  # Bougie haussière précédente
-                  curr_body < 0 and  # Bougie baissière actuelle
-                  open_prices[i] < open_prices[i-1] and  # Gap baissier
-                  abs(curr_body) > abs(prev_body) * 1.2):  # Corps plus grand
-                  
-                patterns.append({
-                    'name': 'BEARISH_KICKING',
-                    'strength': self.patterns_strength['BEARISH_KICKING'],
-                    'direction': 'BEARISH',
-                    'index': i,
-                    'timestamp': datetime.now()
-                })
-        
-        return patterns
-    
-    def _confirm_pattern(self, df, pattern, volumes):
-        """Confirme un pattern avec analyse de volume et contexte"""
-        try:
-            index = pattern['index']
-            if index >= len(df) or index < 0:
-                return False
-            
-            current_candle = df.iloc[index]
-            
-            # CONFIRMATION PAR VOLUME
-            if volumes is not None and index > 0:
-                current_volume = volumes[index]
-                avg_volume = np.mean(volumes[max(0, index-5):index])
-                
-                # Patterns forts doivent avoir volume élevé
-                strong_patterns = ["ENGULFING", "MORNING_STAR", "EVENING_STAR", "THREE_WHITE_SOLDIERS", "THREE_BLACK_CROWS"]
-                if any(p in pattern['name'] for p in strong_patterns):
-                    if current_volume < avg_volume * 0.8:
-                        return False
-            
-            # CONFIRMATION PAR TAILLE DE BOUGIE
-            body_size = abs(current_candle['close'] - current_candle['open'])
-            avg_body = abs(df['close'] - df['open']).iloc[max(0, index-10):index].mean()
-            
-            # Patterns doivent avoir une taille significative
-            if body_size < avg_body * 0.2:
-                return False
-            
-            # CONFIRMATION PAR POSITION DANS LA TENDANCE
-            if not self._confirm_trend_context(df, pattern, index):
-                return False
-            
-            return True
-            
-        except Exception as e:
-            logging.debug(f"Erreur confirmation pattern: {e}")
+    def executer_trade(self, decision: Dict[str, Any]) -> bool:
+        symbol = decision.get("symbol")
+        action = decision.get("action")
+        if not symbol or action not in ("BUY", "SELL"):
             return False
-    
-    def _confirm_trend_context(self, df, pattern, index):
-        """Confirme que le pattern est dans le bon contexte de tendance"""
-        try:
-            if index < 10:
-                return True
-                
-            # Calcul tendance sur 10 périodes
-            prices = df['close'].iloc[index-10:index]
-            trend = "UP" if prices.iloc[-1] > prices.iloc[0] else "DOWN"
-            
-            # Patterns haussiers doivent apparaître en tendance baissière ou consolidation
-            if pattern['direction'] == 'BULLISH':
-                return trend != "UP"  # Meilleur en contre-tendance
-            
-            # Patterns baissiers doivent apparaître en tendance haussière ou consolidation  
-            elif pattern['direction'] == 'BEARISH':
-                return trend != "DOWN"
-            
-            return True
-            
-        except Exception as e:
-            logging.debug(f"Erreur contexte tendance: {e}")
-            return True
-    
-    def calculate_candle_strength(self, df: pd.DataFrame) -> Dict:
-        """Calcule la force des chandeliers avec analyse multi-critères"""
-        if len(df) < 5:
-            return {'bullish_strength': 0, 'bearish_strength': 0, 'patterns': [], 'composite_score': 0}
-        
-        try:
-            current_candle = df.iloc[-1]
-            prev_candle = df.iloc[-2]
-            
-            # 1. DÉTECTION DES PATTERNS AVANCÉS
-            patterns = self.detect_all_patterns(df)
-            
-            # 2. ANALYSE DE LA BOUGIE COURANTE
-            body_size = abs(current_candle['close'] - current_candle['open'])
-            total_range = current_candle['high'] - current_candle['low']
-            body_ratio = body_size / total_range if total_range > 0 else 0
-            
-            upper_wick = current_candle['high'] - max(current_candle['open'], current_candle['close'])
-            lower_wick = min(current_candle['open'], current_candle['close']) - current_candle['low']
-            
-            # 3. CALCUL DES FORCES AVEC POIDS DYNAMIQUES
-            bullish_strength = 0
-            bearish_strength = 0
-            
-            # Force des patterns (poids majoritaire)
-            for pattern in patterns:
-                strength = pattern['strength']
-                if pattern['direction'] == 'BULLISH':
-                    bullish_strength += strength * 0.8  # Poids fort pour les patterns
-                else:
-                    bearish_strength += strength * 0.8
-            
-            # Force de la forme de bougie (poids complémentaire)
-            if current_candle['close'] > current_candle['open']:  # Bougie haussière
-                bullish_strength += self.calculate_bullish_candle_strength(body_ratio, lower_wick, upper_wick) * 0.2
-            else:  # Bougie baissière
-                bearish_strength += self.calculate_bearish_candle_strength(body_ratio, upper_wick, lower_wick) * 0.2
-            
-            # 4. CONFIRMATION MULTI-TIMEFRAME
-            if len(df) >= 20:
-                mtf_confirmation = self.multi_timeframe_confirmation(df)
-                bullish_strength *= mtf_confirmation['bullish_multiplier']
-                bearish_strength *= mtf_confirmation['bearish_multiplier']
-            
-            # 5. ANALYSE DE VOLUME
-            volume_analysis = self.volume_analyzer.analyze_volume(df)
-            bullish_strength *= volume_analysis['bullish_multiplier']
-            bearish_strength *= volume_analysis['bearish_multiplier']
-            
-            # Normalisation
-            bullish_strength = min(1.0, bullish_strength)
-            bearish_strength = min(1.0, bearish_strength)
-            
-            # Score composite
-            composite_score = bullish_strength - bearish_strength
-            
-            return {
-                'bullish_strength': bullish_strength,
-                'bearish_strength': bearish_strength,
-                'patterns': patterns,
-                'composite_score': composite_score,
-                'body_ratio': body_ratio,
-                'wick_balance': upper_wick - lower_wick,
-                'signal_strength': abs(composite_score),
-                'volume_analysis': volume_analysis,
-                'timestamp': datetime.now()
-            }
-            
-        except Exception as e:
-            logging.error(f"❌ Erreur calcul force chandeliers: {e}")
-            return {'bullish_strength': 0, 'bearish_strength': 0, 'patterns': [], 'composite_score': 0}
-    
-    def calculate_bullish_candle_strength(self, body_ratio: float, lower_wick: float, upper_wick: float) -> float:
-        """Calcule la force d'une bougie haussière"""
-        strength = 0
-        
-        # Forte bougie haussière (Marubozu)
-        if body_ratio > 0.9:
-            strength += 0.6
-        elif body_ratio > 0.7:
-            strength += 0.4
-        elif body_ratio > 0.5:
-            strength += 0.2
-        
-        # Marteau (longue mèche inférieure) - Fort signal haussier
-        if lower_wick > upper_wick * 3 and body_ratio > 0.3:
-            strength += 0.4
-        
-        # Bougie avec peu d'ombre supérieure - Fort momentum
-        if upper_wick < lower_wick * 0.3:
-            strength += 0.3
-        
-        return min(1.0, strength)
-    
-    def calculate_bearish_candle_strength(self, body_ratio: float, upper_wick: float, lower_wick: float) -> float:
-        """Calcule la force d'une bougie baissière"""
-        strength = 0
-        
-        # Forte bougie baissière (Marubozu)
-        if body_ratio > 0.9:
-            strength += 0.6
-        elif body_ratio > 0.7:
-            strength += 0.4
-        elif body_ratio > 0.5:
-            strength += 0.2
-        
-        # Étoile filante (longue mèche supérieure) - Fort signal baissier
-        if upper_wick > lower_wick * 3 and body_ratio > 0.3:
-            strength += 0.4
-        
-        # Bougie avec peu d'ombre inférieure - Fort momentum
-        if lower_wick < upper_wick * 0.3:
-            strength += 0.3
-        
-        return min(1.0, strength)
-    
-    def multi_timeframe_confirmation(self, df: pd.DataFrame) -> Dict:
-        """Confirmation multi-timeframe pour renforcer les signaux"""
-        try:
-            if len(df) < 20:
-                return {'bullish_multiplier': 1.0, 'bearish_multiplier': 1.0}
-            
-            # Analyse tendance court terme (5 périodes)
-            short_trend = "UP" if df['close'].iloc[-1] > df['close'].iloc[-5] else "DOWN"
-            
-            # Analyse tendance moyen terme (10 périodes)
-            medium_trend = "UP" if df['close'].iloc[-1] > df['close'].iloc[-10] else "DOWN"
-            
-            # Analyse tendance long terme (15 périodes)
-            long_trend = "UP" if df['close'].iloc[-1] > df['close'].iloc[-15] else "DOWN"
-            
-            # Calcul multiplicateurs basé sur l'alignement des tendances
-            bullish_multiplier = 1.0
-            bearish_multiplier = 1.0
-            
-            # Renforcement si tendances alignées
-            if short_trend == "UP" and medium_trend == "UP" and long_trend == "UP":
-                bullish_multiplier = 1.5  # +50% de force pour signaux haussiers
-            elif short_trend == "DOWN" and medium_trend == "DOWN" and long_trend == "DOWN":
-                bearish_multiplier = 1.5  # +50% de force pour signaux baissiers
-            
-            return {
-                'bullish_multiplier': bullish_multiplier,
-                'bearish_multiplier': bearish_multiplier,
-                'short_trend': short_trend,
-                'medium_trend': medium_trend,
-                'long_trend': long_trend
-            }
-            
-        except Exception as e:
-            logging.debug(f"Erreur confirmation multi-timeframe: {e}")
-            return {'bullish_multiplier': 1.0, 'bearish_multiplier': 1.0}
 
- 
-        self.gestionnaire_micro = GestionnaireMicroScalpingPro(self.gestionnaire_erreurs)
-        self.moteur_decision = MoteurDecisionIA(self.gestionnaire_erreurs)
-        self.security_manager = SecurityManager()
-        self.candle_analyzer = AdvancedCandlestickAnalyzer()
-        
-        #AJOUT DES 8 LIGNES
-        self.data_cache = DataCache(ttl=3)
-        self.structured_logger = StructuredLogger()
-        self.dynamic_config = DynamicConfigManager(config_manager)
-        self.network_resilience = NetworkResilienceManager()
-        self.advanced_metrics = AdvancedMetrics()
-        self.last_cleanup = datetime.now()
-        self.config_check_interval = 60
-        self.last_config_check = datetime.now()
-        
-        self.ai_server_thread = None
-        
-        self.simulation_mode = True
-        
-        # Statistiques avancées
-        self.performance_stats = {
-            'hourly_trades': deque(maxlen=24),
-            'daily_profit': 0.0,
-            'weekly_profit': 0.0,
-            'max_drawdown': 0.0
-        }
-        
-        self.current_market_data = {}
-        self.active_trades = []        
-               
-    def log_activity_realtime(self, symbol: str, action: str, details: str = ""):
-        """Log l'activité de trading en temps réel"""
-        timestamp = datetime.now().strftime("%H:%M:%S")
-    
-        # Couleurs pour différents types d'actions
-        action_colors = {
-            "ANALYSE": "🔍",
-            "SIGNAL_IA": "🤖", 
-            "TRADE": "🎯",
-            "EXECUTION": "⚡",
-            "PROFIT": "💰",
-            "PERTE": "🔴"
-        }
-    
-        emoji = action_colors.get(action, "📝")
-    
-        logging.info(f"{emoji} [{timestamp}] {symbol} | {action} | {details}")
-        
-    def validate_spread(self, symbol, spread_pips):
-        """Valide si le spread est acceptable pour le trading - VERSION AMÉLIORÉE"""
-        spread_limits = {
-            'BTCUSD': 70.0,    # pips max
-            'EURUSD': 2.0,
-            'USDJPY': 3.0,
-            'GBPUSD': 2.5,
-            'AUDUSD': 2.5,
-            'NZDUSD': 3.0,
-            'GOLD': 100.0,
-            'XAUUSD': 100.0    # ✅ Ajout pour compatibilité
-        }
-        
-        limit = spread_limits.get(symbol, 10.0)
-        
-        if spread_pips > limit:
-            # ✅ Utilise ton système de logging existant
-            self.log_activity_realtime(symbol, "SPREAD", f"Trop élevé: {spread_pips:.1f}pips > {limit}pips")
+        if not self.risk_manager:
             return False
-        
-        # ✅ Log spread acceptable
-        if spread_pips <= limit * 0.5:  # Moins de 50% de la limite
-            self.log_activity_realtime(symbol, "SPREAD", f"Optimal: {spread_pips:.1f}pips")
-        else:
-            self.log_activity_realtime(symbol, "SPREAD", f"Acceptable: {spread_pips:.1f}pips")
-        
+
+        account_info = mt5.account_info()
+        balance = account_info.balance if account_info else 0.0
+        ok, reason = self.risk_manager.can_trade(datetime.now(), balance)
+        if not ok:
+            self.journal.log_event({"type": "blocked", "symbol": symbol, "reason": reason})
+            logging.warning("⚠️ Trade bloqué: %s", reason)
+            return False
+
+        if not self.real_trading:
+            logging.info("[SIMU] %s %s", action, symbol)
+            return True
+
+        symbol_info = mt5.symbol_info(symbol)
+        if not symbol_info or not symbol_info.visible:
+            mt5.symbol_select(symbol, True)
+
+        tick = mt5.symbol_info_tick(symbol)
+        if not tick:
+            return False
+
+        volume = SYMBOLS_CONFIG.get(symbol, {}).get("min_lot", 0.01)
+        price = tick.ask if action == "BUY" else tick.bid
+        sl = decision.get("sl_price")
+        tp = decision.get("tp_price")
+
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": volume,
+            "type": mt5.ORDER_TYPE_BUY if action == "BUY" else mt5.ORDER_TYPE_SELL,
+            "price": price,
+            "sl": sl,
+            "tp": tp,
+            "deviation": 20,
+            "type_filling": mt5.ORDER_FILLING_IOC,
+            "type_time": mt5.ORDER_TIME_GTC,
+        }
+
+        start_ts = time.perf_counter()
+        result = mt5.order_send(request)
+        latency_ms = (time.perf_counter() - start_ts) * 1000.0
+        if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+            logging.error("❌ Ordre rejeté: %s", result)
+            self.journal.log_event({"type": "order_rejected", "symbol": symbol, "action": action, "result": str(result)})
+            return False
+        self.risk_manager.record_trade(datetime.now())
+        self.last_trade_time = datetime.now()
+        self.journal.log_event({
+            "type": "order_filled",
+            "symbol": symbol,
+            "action": action,
+            "price": price,
+            "latency_ms": round(latency_ms, 1),
+        })
+
+        symbol_info = mt5.symbol_info(symbol)
+        if symbol_info and hasattr(result, "price"):
+            slippage_points = abs(result.price - price) / symbol_info.point
+            if slippage_points > DEFAULT_RISK["max_slippage_points"]:
+                self.journal.log_event({
+                    "type": "slippage_alert",
+                    "symbol": symbol,
+                    "slippage_points": slippage_points,
+                })
+                logging.warning("⚠️ Slippage élevé: %.1f points", slippage_points)
+        if latency_ms > DEFAULT_RISK["max_latency_ms"]:
+            logging.warning("⚠️ Latence élevée: %.0f ms", latency_ms)
+        logging.info("✅ Ordre exécuté: %s %s", action, symbol)
         return True
-        
-    def print_trading_header(self):
-        """Affiche l'en-tête du trading - VERSION SOLDE RÉEL"""
-        try:
-            # Vérifier statut IA en temps réel
-            ia_status = "✅ CONNECTÉ" if self.check_ai_engine_connection() else "❌ DÉCONNECTÉ"
-            
-            # ✅ CORRECTION BALANCE - TOUJOURS LE SOLDE RÉEL
-            balance_text = "N/A"
-            balance_currency = "USD"
-            
-            try:
-                # MÉTHODE PRINCIPALE: Récupération directe depuis MT5
-                account_info = mt5.account_info()
-                if account_info:
-                    balance_text = f"${account_info.balance:.2f}"
-                    balance_currency = getattr(account_info, 'currency', 'USD')
-                    # Sauvegarder pour éviter de refaire l'appel
-                    self.account = account_info
-                    logging.info(f"✅ Balance réelle récupérée: {balance_text} {balance_currency}")
-                else:
-                    # MÉTHODE DE SECOURS: self.account existant
-                    if hasattr(self, 'account') and self.account:
-                        balance_text = f"${self.account.balance:.2f}"
-                        balance_currency = getattr(self.account, 'currency', 'USD')
-                        logging.info(f"✅ Balance depuis self.account: {balance_text} {balance_currency}")
-                    else:
-                        logging.warning("⚠️ Impossible de récupérer la balance")
-                        balance_text = "EN COURS..."
-                        
-            except Exception as balance_error:
-                                    'reason': exit_reason,
-                                    'exit_score': exit_confidence,
-                                    'profit': position.profit,
-                                    'market_conditions': market_data
-                                }
-                                success = position.profit > 0
-                                self.exit_guardian.record_exit_performance(symbol, exit_data, success)
-                            
-                            self.log_activity_realtime(symbol, "SORTIE_INTELLIGENTE", 
-                                f"Fermeture IA | Profit: ${position.profit:.2f} | Confiance: {exit_confidence:.1%}")
-                    
-                    # Mettre à jour le monitoring (pour micro-scalping)
-                    self.update_position_monitoring(position_key, position_data, market_data)
-                        
-        except Exception as e:
-            logging.error(f"❌ Erreur surveillance positions: {e}")
-                
-    def get_market_analysis_for_symbol(self, symbol: str) -> Dict:
-        """Analyse marché pour un symbole spécifique"""
-        try:
-            rates = mt5.copy_rates_from_pos(symbol, TIMEFRAME, 0, 50)
-            if rates is None:
-                return {}
-                
-            df = pd.DataFrame(rates)
-            tick_data = self.get_symbol_tick_data(symbol)
-            
-            if not tick_data:
-                return {}
-                
-            # Utiliser le moteur de décision existant
-            analyse = self.moteur_decision.analyser_marche_complet(df, tick_data)
-            
-            if analyse['valide']:
-                return {
-                    'rsi': analyse['indicateurs']['rsi'],
-                    'macd_histogram': analyse['indicateurs']['macd_histogram'],
-                    'bb_position': analyse['indicateurs']['bb_position'],
-                    'candle_analysis': analyse.get('candle_analysis', {}),
-                    'price': analyse['indicateurs']['price']
-                }
-            return {}
-            
-        except Exception as e:
-            logging.error(f"❌ Erreur analyse marché {symbol}: {e}")
-            return {}
 
-    def calculate_momentum(self, symbol: str) -> float:
-        """Calcule le momentum actuel"""
-        try:
-            rates = mt5.copy_rates_from_pos(symbol, TIMEFRAME, 0, 10)
-            if rates is None or len(rates) < 5:
-                return 0.0
-                
-            closes = [r['close'] for r in rates]
-            current_price = closes[-1]
-            price_5_periods_ago = closes[-5] if len(closes) >= 5 else closes[0]
-            
-            momentum = (current_price - price_5_periods_ago) / price_5_periods_ago
-            return momentum * 100  # Pourcentage
-            
-        except Exception as e:
-            logging.error(f"❌ Erreur calcul momentum {symbol}: {e}")
-            return 0.0
+    def should_enter_dormant(self, now: datetime) -> bool:
+        if not self.last_trade_time:
+            return False
+        idle_minutes = (now - self.last_trade_time).total_seconds() / 60.0
+        return idle_minutes >= self.dormant_after_minutes
 
-    def close_position(self, ticket: int, symbol: str) -> bool:
-        """Ferme une position spécifique"""
-        try:
-            if self.simulation_mode:
-                logging.info(f"📋 SIMULATION: Fermeture position {ticket}")
-                return True
-                
-            position = mt5.positions_get(ticket=ticket)
-            if not position:
-                return False
-                
-            position = position[0]
-            order_type = mt5.ORDER_TYPE_SELL if position.type == 0 else mt5.ORDER_TYPE_BUY
-            
-            request = {
-                "action": mt5.TRADE_ACTION_DEAL,
-                "position": ticket,
+    def dormant_cycle(self):
+        if not self.is_dormant:
+            self.is_dormant = True
+            logging.info("💤 Mode dormant activé (inactivité prolongée)")
+        time.sleep(self.dormant_sleep_seconds)
+
+    def run_backtest(self, symbol: str = "BTCUSD", timeframe=mt5.TIMEFRAME_M1, bars: int = 500):
+        rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, bars)
+        if rates is None or len(rates) < 10:
+            logging.error("❌ Données insuffisantes pour backtest")
+            return
+
+        symbol_info = mt5.symbol_info(symbol)
+        point = symbol_info.point if symbol_info else 0.00001
+        commission = DEFAULT_RISK["commission_per_lot"]
+        slippage_points = DEFAULT_RISK["simulated_slippage_points"]
+        volume = SYMBOLS_CONFIG.get(symbol, {}).get("min_lot", 0.01)
+
+        pnl = 0.0
+        trades = 0
+        wins = 0
+
+        for i in range(1, len(rates)):
+            bar = rates[i]
+            payload = {
+                "context": "entry",
                 "symbol": symbol,
-                "volume": position.volume,
-                "type": order_type,
+                "bid": bar["close"],
+                "ask": bar["close"],
+                "spread": 0,
+                "volume": bar["tick_volume"],
+                "timestamp": datetime.fromtimestamp(bar["time"]).isoformat(),
+                "risk": MICRO_SCALPING_CONFIG.get("risk_per_trade", 0.5),
+            }
+            decision = self._request_ai_decision(payload)
+            if not decision or decision.get("action") not in ("BUY", "SELL"):
+                continue
+
+            next_bar = rates[i + 1] if i + 1 < len(rates) else bar
+            spread_points = float(bar["spread"]) if "spread" in bar.dtype.names else 0.0
+            spread = spread_points * point
+            entry_mid = bar["close"]
+            exit_mid = next_bar["close"]
+
+            if decision.get("action") == "BUY":
+                entry = entry_mid + (spread / 2) + (slippage_points * point)
+                exit_price = exit_mid - (spread / 2) - (slippage_points * point)
+                trade_pnl = exit_price - entry
+            else:
+                entry = entry_mid - (spread / 2) - (slippage_points * point)
+                exit_price = exit_mid + (spread / 2) + (slippage_points * point)
+                trade_pnl = entry - exit_price
+
+            trade_pnl -= (commission * volume * 2)
+
+            pnl += trade_pnl
+            trades += 1
+            if trade_pnl > 0:
+                wins += 1
+
+        win_rate = (wins / trades * 100) if trades else 0
+        logging.info("📊 BACKTEST: trades=%s win_rate=%.1f%% pnl=%.5f", trades, win_rate, pnl)
+
+    def perform_health_check(self) -> bool:
+        try:
+            resp = requests.get(AI_HEALTH_URL, timeout=self.request_timeout)
+            return resp.status_code == 200
+        except Exception:
+            return False
+
+    def shutdown(self):
+        try:
+            mt5.shutdown()
+        except Exception:
+            pass
+
+
+def parse_arguments():
+    parser = argparse.ArgumentParser(description="BTCUSD Micro Scalper V8 PRO - IA")
+    parser.add_argument("--real", action="store_true", help="Mode trading réel")
+    parser.add_argument("--mode", choices=["MICRO", "AGGRESSIVE", "CONSERVATIVE"], default="MICRO")
+    parser.add_argument("--backtest", action="store_true", help="Lancer un backtest IA")
+    parser.add_argument("--bars", type=int, default=500, help="Nombre de bougies backtest")
+    parser.add_argument("--symbol", type=str, default="BTCUSD", help="Symbole backtest")
+    return parser.parse_args()
+
+
+def main():
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
+    args = parse_arguments()
+
+    bot = BTCUSDMicroScalperPro()
+    if not bot.initialize(real_trading=args.real, mode=args.mode):
+        logging.error("❌ Échec initialisation bot V8 PRO")
+        return
+
+    if args.backtest:
+        bot.run_backtest(symbol=args.symbol, bars=args.bars)
+        return
+
+    last_decision = datetime.now()
+    last_health_check = datetime.now()
+    last_dormant_check = datetime.now()
+
+    try:
+        while True:
+            if not bot.verify_connection():
+                time.sleep(2)
+                continue
+
+            now = datetime.now()
+
+            if (now - last_dormant_check).seconds >= bot.dormant_check_seconds:
+                if bot.should_enter_dormant(now):
+                    bot.dormant_cycle()
+                else:
+                    if bot.is_dormant:
+                        bot.is_dormant = False
+                        logging.info("🌞 Réveil automatique")
+                last_dormant_check = now
+
+            if (now - last_decision).seconds >= 3 and not bot.is_dormant:
+                decision = bot.executer_strategie_micro_ia()
+                if decision:
+                    bot.executer_trade(decision)
+                last_decision = now
+
+            if (now - last_health_check).seconds >= 30:
+                if not bot.perform_health_check():
+                    logging.warning("⚠️ IA indisponible")
+                last_health_check = now
+
+            time.sleep(0.2 if not bot.is_dormant else 1.0)
+    except KeyboardInterrupt:
+        logging.info("🛑 Arrêt demandé")
+    finally:
+        bot.shutdown()
+
+
+if __name__ == "__main__":
+    main()
                 "price": position.price_current,
                 "deviation": 20,
                 "magic": MAGIC,
@@ -2641,6 +2090,8 @@ DEFAULT_RISK = {
     "max_daily_loss_pct": 2.0,
     "max_slippage_points": 25,
     "max_latency_ms": 800,
+    "commission_per_lot": 0.0,
+    "simulated_slippage_points": 5,
 }
 
 
@@ -2720,6 +2171,10 @@ class BTCUSDMicroScalperPro:
         self.last_trade_time: Optional[datetime] = None
         self.journal = TradeJournal()
         self.risk_manager: Optional[RiskManager] = None
+        self.dormant_after_minutes = 30
+        self.dormant_check_seconds = 60
+        self.dormant_sleep_seconds = 15
+        self.is_dormant = False
 
     def initialize(self, real_trading: bool = False, mode: str = "MICRO") -> bool:
         self.real_trading = real_trading
@@ -2859,6 +2314,7 @@ class BTCUSDMicroScalperPro:
             self.journal.log_event({"type": "order_rejected", "symbol": symbol, "action": action, "result": str(result)})
             return False
         self.risk_manager.record_trade(datetime.now())
+        self.last_trade_time = datetime.now()
         self.journal.log_event({
             "type": "order_filled",
             "symbol": symbol,
@@ -2882,11 +2338,29 @@ class BTCUSDMicroScalperPro:
         logging.info("✅ Ordre exécuté: %s %s", action, symbol)
         return True
 
+    def should_enter_dormant(self, now: datetime) -> bool:
+        if not self.last_trade_time:
+            return False
+        idle_minutes = (now - self.last_trade_time).total_seconds() / 60.0
+        return idle_minutes >= self.dormant_after_minutes
+
+    def dormant_cycle(self):
+        if not self.is_dormant:
+            self.is_dormant = True
+            logging.info("💤 Mode dormant activé (inactivité prolongée)")
+        time.sleep(self.dormant_sleep_seconds)
+
     def run_backtest(self, symbol: str = "BTCUSD", timeframe=mt5.TIMEFRAME_M1, bars: int = 500):
         rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, bars)
         if rates is None or len(rates) < 10:
             logging.error("❌ Données insuffisantes pour backtest")
             return
+
+        symbol_info = mt5.symbol_info(symbol)
+        point = symbol_info.point if symbol_info else 0.00001
+        commission = DEFAULT_RISK["commission_per_lot"]
+        slippage_points = DEFAULT_RISK["simulated_slippage_points"]
+        volume = SYMBOLS_CONFIG.get(symbol, {}).get("min_lot", 0.01)
 
         pnl = 0.0
         trades = 0
@@ -2909,12 +2383,21 @@ class BTCUSDMicroScalperPro:
                 continue
 
             next_bar = rates[i + 1] if i + 1 < len(rates) else bar
-            entry = bar["close"]
-            exit_price = next_bar["close"]
+            spread_points = float(bar["spread"]) if "spread" in bar.dtype.names else 0.0
+            spread = spread_points * point
+            entry_mid = bar["close"]
+            exit_mid = next_bar["close"]
+
             if decision.get("action") == "BUY":
+                entry = entry_mid + (spread / 2) + (slippage_points * point)
+                exit_price = exit_mid - (spread / 2) - (slippage_points * point)
                 trade_pnl = exit_price - entry
             else:
+                entry = entry_mid - (spread / 2) - (slippage_points * point)
+                exit_price = exit_mid + (spread / 2) + (slippage_points * point)
                 trade_pnl = entry - exit_price
+
+            trade_pnl -= (commission * volume * 2)
 
             pnl += trade_pnl
             trades += 1
@@ -2963,6 +2446,7 @@ def main():
 
     last_decision = datetime.now()
     last_health_check = datetime.now()
+    last_dormant_check = datetime.now()
 
     try:
         while True:
@@ -2972,7 +2456,16 @@ def main():
 
             now = datetime.now()
 
-            if (now - last_decision).seconds >= 3:
+            if (now - last_dormant_check).seconds >= bot.dormant_check_seconds:
+                if bot.should_enter_dormant(now):
+                    bot.dormant_cycle()
+                else:
+                    if bot.is_dormant:
+                        bot.is_dormant = False
+                        logging.info("🌞 Réveil automatique")
+                last_dormant_check = now
+
+            if (now - last_decision).seconds >= 3 and not bot.is_dormant:
                 decision = bot.executer_strategie_micro_ia()
                 if decision:
                     bot.executer_trade(decision)
@@ -2983,7 +2476,7 @@ def main():
                     logging.warning("⚠️ IA indisponible")
                 last_health_check = now
 
-            time.sleep(0.2)
+            time.sleep(0.2 if not bot.is_dormant else 1.0)
     except KeyboardInterrupt:
         logging.info("🛑 Arrêt demandé")
     finally:
