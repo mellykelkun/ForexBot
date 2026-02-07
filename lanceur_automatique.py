@@ -715,6 +715,7 @@ class IntelligentLauncher:
             print("\n" + "=" * 60)
             print("✅ SYSTÈME MICRO SCALPING OPTIMISÉ LANCÉ!")
             print("🤖 Moteur IA: http://localhost:5003")
+            print("🖥️  Dashboard: http://localhost:5004")
             print("🔧 Monitoring: Redémarrage intelligent actif")
             print("💾 Gestion mémoire: Optimisée")
             print("=" * 60)

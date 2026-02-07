@@ -23,7 +23,7 @@ class GroqService:
     ) -> None:
         load_dotenv()
         self.api_key = api_key or os.getenv("GROQ_API_KEY")
-        self.model = model or os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+        self.model = model or os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
         self.base_url = base_url.rstrip("/")
         self.logger = logger or logging.getLogger("GroqService")
 

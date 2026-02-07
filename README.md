@@ -33,6 +33,19 @@ MT5 (marché) -> Bot (payload) -> IA Groq -> décision -> Bot (risk check) -> MT
 
 ---
 
+## Stack & schéma technique
+```
+Windows + Python 3.10
+│
+├─ MetaTrader5 (API Python) ──> exécution ordres réels
+├─ Requests / HTTP ───────────> IA Groq + contrôle
+├─ Flask + Waitress ──────────> Dashboard + API IA
+├─ Logging (rotations) ───────> logs + journaux
+└─ .env / dotenv ─────────────> configuration runtime
+```
+
+---
+
 ## Fonctionnalités clés
 - ✅ **Trading réel MT5** (pas de simulation)
 - ✅ **IA Groq uniquement** (aucune IA locale)
@@ -112,7 +125,6 @@ Variables utiles supplémentaires :
 
 ### Bot trading
 - **backend/bots/bot_btcusd_ultra_scalper_v8_clean.py** : bot principal (scalping multi‑symboles, risk manager, journal, watchdog, purge logs).
-- **backend/bots/bot_btcusd_ultra_scalper_v8_robus.py** : **archivé** (bloqué).
 
 ### Config
 - **backend/config/config_micro_scalping_pro.py** : configuration trading (symboles, risques, timeframes, spreads, etc.).
@@ -124,11 +136,10 @@ Variables utiles supplémentaires :
 ### Logs & données
 - **logs/** : journaux runtime (trade_journal.jsonl, structured_logs.json, etc.).
 - **backups/** : sauvegardes journalières des logs.
-- **ai_training.db / trading_dashboard.db** : bases locales (si utilisées par certains modules).
 
 ### Scripts maintenance
 - **scripts/maintenance/purge_logs.py** : purge manuelle complète des logs.
-- **cleanup_memory.py / cleanup_databases.py** : outils de maintenance.
+- **scripts/maintenance/cleanup_memory.py / scripts/maintenance/cleanup_databases.py** : outils de maintenance.
 
 ---
 
@@ -255,3 +266,34 @@ La purge manuelle se fait via :
 
 ## Support
 Si tu veux plus d’indicateurs, de patterns ou des dashboards avancés, indique précisément ce que tu veux ajouter.
+
+---
+
+## Bibliothèques utilisées (stack complet)
+### Core
+- Python 3.10
+- MetaTrader5
+- requests
+- python-dotenv
+
+### Web / API
+- Flask
+- Flask-Cors
+- Flask-SocketIO (installé, non critique)
+- Waitress
+
+### Data / Science
+- numpy
+- pandas
+- h5py
+
+### Utilitaires
+- psutil
+- colorama
+
+### Autres dépendances installées
+- certifi, charset-normalizer, idna, urllib3
+- click, itsdangerous, blinker, Jinja2, Werkzeug
+- typing-extensions
+
+> Note : certaines libs sont présentes via l’environnement mais pas forcément utilisées dans le bot clean.
