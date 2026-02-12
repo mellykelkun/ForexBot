@@ -1,6 +1,7 @@
 """
 MOTEUR IA - Groq uniquement (IA autonome)
 Tout traitement local/heuristique supprimé.
+Sécurisé: écoute 127.0.0.1 uniquement + token API.
 """
 
 from datetime import datetime
@@ -9,6 +10,7 @@ import logging
 from flask import Flask, jsonify, request
 
 from backend.ai.groq_service import GroqService
+from backend.security.auth import require_api_token
 
 
 class AdaptiveAIEngine:
@@ -71,6 +73,7 @@ def api_health():
 
 
 @app.route("/api/decision", methods=["POST"])
+@require_api_token
 def decision_api():
     try:
         payload = request.get_json() or {}
@@ -100,21 +103,22 @@ def analyze_market_api():
 def run_ai_server():
     print("=" * 50)
     print("[IA] MOTEUR IA GROQ - AUTONOME")
-    print("[WEB] Serveur: http://localhost:5003")
+    print("[WEB] Serveur: http://127.0.0.1:5003")
+    print("[SEC] Écoute restreinte à localhost + API token")
     print("=" * 50)
     try:
         from waitress import serve
-        serve(app, host="0.0.0.0", port=5003)
+        serve(app, host="127.0.0.1", port=5003)
         return
     except Exception:
         pass
 
     try:
         from wsgiref.simple_server import make_server
-        httpd = make_server("0.0.0.0", 5003, app)
+        httpd = make_server("127.0.0.1", 5003, app)
         httpd.serve_forever()
     except Exception:
-        app.run(host="0.0.0.0", port=5003, debug=False, use_reloader=False)
+        app.run(host="127.0.0.1", port=5003, debug=False, use_reloader=False)
 
 
 if __name__ == "__main__":

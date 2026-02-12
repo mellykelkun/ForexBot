@@ -1,15 +1,17 @@
-"""Dashboard trading pro (UI + API)."""
+"""Dashboard trading pro (UI + API) — Sécurisé par clé d'accès."""
 
 import json
 import os
+import secrets
 from datetime import datetime
 from typing import List
 
 import requests
-from flask import Flask, jsonify, request, render_template
+from flask import Flask, jsonify, request, render_template, redirect, url_for, session
 from waitress import serve
 
 from backend.config.config_micro_scalping_pro import SYMBOLS_CONFIG
+from backend.security.auth import verify_key, require_dashboard_auth, get_access_key_hash
 
 CONTROL_URL = os.getenv("CONTROL_URL", "http://127.0.0.1:5010")
 DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", "5004"))
@@ -17,6 +19,7 @@ DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", "5004"))
 TEMPLATES_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "templates"))
 
 app = Flask(__name__, template_folder=TEMPLATES_DIR)
+app.secret_key = os.getenv("FLASK_SECRET_KEY") or os.getenv("DASHBOARD_SECRET") or secrets.token_hex(32)
 LOG_DIR = "logs"
 ROOT_LOGS = ["process_manager.log", "bot_micro_scalper_v8_pro.log"]
 ALLOWED_SUFFIXES = (".log", ".json", ".jsonl")
@@ -106,12 +109,36 @@ def _log_sizes() -> list[dict]:
     return items
 
 
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        key = request.form.get("access_key", "")
+        stored_hash = get_access_key_hash()
+        if stored_hash and verify_key(key, stored_hash):
+            session["authenticated"] = True
+            session.permanent = True
+            return redirect(url_for("index"))
+        elif not stored_hash:
+            # Première utilisation — pas de clé configurée
+            session["authenticated"] = True
+            return redirect(url_for("index"))
+        return render_template("login.html", error="Clé d'accès invalide")
+    return render_template("login.html")
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
+
 @app.route("/health")
 def health():
     return jsonify({"status": "ok", "service": "dashboard"})
 
 
 @app.route("/api/status")
+@require_dashboard_auth
 def api_status():
     try:
         resp = requests.get(f"{CONTROL_URL}/status", timeout=3)
@@ -121,6 +148,7 @@ def api_status():
 
 
 @app.route("/api/journal")
+@require_dashboard_auth
 def api_journal():
     limit = int(request.args.get("limit", "50"))
     data = _tail_jsonl(os.path.join("logs", "trade_journal.jsonl"), limit)
@@ -128,6 +156,7 @@ def api_journal():
 
 
 @app.route("/api/ai")
+@require_dashboard_auth
 def api_ai():
     limit = int(request.args.get("limit", "30"))
     data = _tail_jsonl(os.path.join("logs", "trade_journal.jsonl"), 200)
@@ -136,6 +165,7 @@ def api_ai():
 
 
 @app.route("/api/logs")
+@require_dashboard_auth
 def api_logs():
     allowed = {
         "process_manager.log": "process_manager.log",
@@ -150,6 +180,7 @@ def api_logs():
 
 
 @app.route("/api/payload-volume")
+@require_dashboard_auth
 def api_payload_volume():
     limit = int(request.args.get("limit", "200"))
     candidates = [
@@ -167,6 +198,7 @@ def api_payload_volume():
 
 
 @app.route("/api/control/<action>", methods=["POST"])
+@require_dashboard_auth
 def api_control(action: str):
     if action not in {"start", "stop", "restart"}:
         return jsonify({"error": "invalid action"}), 400
@@ -178,6 +210,7 @@ def api_control(action: str):
 
 
 @app.route("/api/purge-logs", methods=["POST"])
+@require_dashboard_auth
 def api_purge_logs():
     global LAST_PURGE_TS
     result = _purge_all_logs()
@@ -186,6 +219,7 @@ def api_purge_logs():
 
 
 @app.route("/api/maintenance")
+@require_dashboard_auth
 def api_maintenance():
     return jsonify({
         "last_purge": LAST_PURGE_TS,
@@ -194,6 +228,7 @@ def api_maintenance():
 
 
 @app.route("/api/markets")
+@require_dashboard_auth
 def api_markets():
     data = _tail_jsonl(os.path.join("logs", "trade_journal.jsonl"), 500)
     by_symbol: dict[str, dict] = {}
@@ -223,6 +258,7 @@ def api_markets():
 
 
 @app.route("/api/symbols")
+@require_dashboard_auth
 def api_symbols():
     symbols = []
     for name, cfg in SYMBOLS_CONFIG.items():
@@ -234,12 +270,13 @@ def api_symbols():
 
 
 @app.route("/")
+@require_dashboard_auth
 def index():
     return render_template("dashboard.html")
 
 
 def main():
-    serve(app, host="0.0.0.0", port=DASHBOARD_PORT)
+    serve(app, host="127.0.0.1", port=DASHBOARD_PORT)
 
 
 if __name__ == "__main__":

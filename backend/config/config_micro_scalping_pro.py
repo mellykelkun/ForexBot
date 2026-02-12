@@ -354,7 +354,7 @@ ADVANCED_SECURITY = {
 
 # =============== CONFIGURATION SORTIE INTELLIGENTE ===============
 INTELLIGENT_EXIT_CONFIG = {
-    "enabled": False,
+    "enabled": True,
     "no_fixed_sl_tp": True,  # Pas de SL/TP fixes
     
     # Seuils de décision
@@ -534,28 +534,8 @@ SPREAD_CONFIG = {
 }
 
 # =============== CONFIGURATION CHANDELIERS JAPONAIS ===============
-CANDLESTICK_CONFIG = {
-    "enabled": True,
-    "min_confidence": 0.7,
-    "patterns_weight": 0.4,  # Poids dans la décision finale
-    "required_volume": True,
-    "timeframes": ['M5', 'M15', 'H1'],  # Timeframes pour l'analyse
-    
-    "pattern_strengths": {
-        "STRONG_BULLISH": ["BULLISH_ENGULFING", "MORNING_STAR", "THREE_WHITE_SOLDIERS"],
-        "MODERATE_BULLISH": ["HAMMER", "PIERCING_LINE", "INVERTED_HAMMER"],
-        "STRONG_BEARISH": ["BEARISH_ENGULFING", "EVENING_STAR", "THREE_BLACK_CROWS"],
-        "MODERATE_BEARISH": ["SHOOTING_STAR", "HANGING_MAN", "DARK_CLOUD_COVER"],
-        "NEUTRAL": ["DOJI", "SPINNING_TOP"]
-    },
-    
-    "confirmation_rules": {
-        "require_volume_confirmation": True,
-        "require_trend_alignment": True,
-        "min_body_ratio": 0.3,
-        "max_wick_ratio": 0.7
-    }
-}
+# NOTE: Définition unique — la version avancée est plus loin dans le fichier.
+# (Ancienne duplication CODE-01 supprimée)
 
 def get_indicators_for_timeframe(timeframe: str) -> dict:
     """Retourne les paramètres d'indicateurs adaptés au timeframe"""
@@ -751,9 +731,6 @@ class Config:
         self.symbol_exit_rules = SYMBOL_EXIT_RULES
         
         self.TRADING_MODE = 'PAPER'
-        
-        # ⭐ AJOUTEZ CES ATTRIBUTS MANQUANTS ⭐
-        self.TRADING_MODE = 'PAPER'
         self.RISK_PER_TRADE = 0.5
         self.INITIAL_CAPITAL = 1000.0
         self.MICRO_SCALPING_ENABLED = True
@@ -776,19 +753,10 @@ class Config:
                 if mt5.symbol_info(symbol):
                     return symbol
             return "GOLD"  # Fallback
-        except:
-            return "GOLD"
-        
-        try:
-            import MetaTrader5 as mt5
-            gold_symbols = ["GOLD", "XAUUSD", "XAUUSDm", "GOLDm", "XAUUSDe"]
-            for symbol in gold_symbols:
-                if mt5.symbol_info(symbol):
-                    return symbol
-            return "GOLD"  # Fallback
-        except:
+        except Exception:
             return "GOLD"
             
+    @staticmethod
     def test_configuration():
         """Teste la configuration multi-symboles"""
         print("\n" + "="*50)

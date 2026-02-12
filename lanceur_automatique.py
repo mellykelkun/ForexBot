@@ -18,7 +18,6 @@ import threading
 import json
 os.environ['PYTHONIOENCODING'] = 'utf-8'
 import gc
-import psutil
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -49,16 +48,14 @@ class MemoryCleaner:
         }
     
     def force_garbage_collection(self):
-        """Force le garbage collection ULTRA AGGRESSIF"""
+        """Force le garbage collection (3 passes optimisées)"""
         try:
             collected_total = 0
-            # 🔥 COLLECTE TRÈS AGGRESSIVE - 10 passes au lieu de 3
-            for i in range(10):
+            for i in range(3):
                 collected = gc.collect()
                 collected_total += collected
-                if collected == 0 and i >= 5:  # Arrêter après 5 passes si rien
+                if collected == 0:
                     break
-                time.sleep(0.01)  # Micro-pause
             return collected_total
             
         except Exception as e:
@@ -79,7 +76,7 @@ class MemoryCleaner:
                 try:
                     from matplotlib import _pylab_helpers
                     _pylab_helpers.Gcf.destroy_all()
-                except:
+                except Exception:
                     pass
                 return True
         except Exception as e:
@@ -94,13 +91,13 @@ class MemoryCleaner:
                 import numpy as np
                 if hasattr(np, '_globals'):
                     np._globals._clear_cache()
-            except: pass
+            except Exception: pass
             
             # 🔥 CACHE IMPORT
             try:
                 import importlib
                 importlib.invalidate_caches()
-            except: pass
+            except Exception: pass
             
             # 🔥 CACHE PYTHON INTERNE
             if hasattr(sys, '_clear_type_cache'):
@@ -117,23 +114,19 @@ class MemoryCleaner:
             # Mémoire avant cleanup
             before = self.get_memory_usage()
             
-            logging.info("🧹 DÉBUT NETTOYAGE MÉMOIRE ULTRA-AGGRESSIF...")
+            logging.info("🧹 DÉBUT NETTOYAGE MÉMOIRE...")
             
-            # 🔥 ÉTAPE 1: Nettoyer TensorFlow/Keras
-            self.clear_tensorflow_memory()
-            
-            # 🔥 ÉTAPE 2: Nettoyer les caches des bibliothèques
+            # ÉTAPE 1: Nettoyer les caches des bibliothèques
             self.clear_matplotlib_cache()
             
-            # 🔥 ÉTAPE 3: Vider TOUS les caches Python
+            # ÉTAPE 2: Vider les caches Python
             self.clear_all_python_caches()
             
-            # 🔥 ÉTAPE 4: Forcer le garbage collection ULTRA AGGRESSIF
+            # ÉTAPE 3: Forcer le garbage collection (3 passes)
             collected = self.force_garbage_collection()
             
-            # 🔥 ÉTAPE 5: Second passage de nettoyage
-            self.clear_tensorflow_memory()  # Double nettoyage TensorFlow
-            gc.collect()  # Dernier passage GC
+            # Fin — passage GC final
+            gc.collect()
             
             # Mémoire après cleanup
             after = self.get_memory_usage()

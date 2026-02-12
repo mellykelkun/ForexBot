@@ -12,13 +12,27 @@ import subprocess
 from datetime import datetime, timedelta
 
 def kill_python_processes():
-    """Tue tous les processus Python (Windows)"""
+    """Arrête UNIQUEMENT les processus ForexBot (pas tous les Python)"""
     try:
-        # Méthode Windows
-        result = subprocess.run(['taskkill', '/f', '/im', 'python.exe'], 
-                              capture_output=True, text=True)
-        if "SUCCESS" in result.stdout or "terminé" in result.stdout:
-            print("✅ Tous les processus Python arrêtés")
+        import psutil
+        current_pid = os.getpid()
+        killed = 0
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+            try:
+                if proc.info['pid'] == current_pid:
+                    continue
+                cmdline = proc.info.get('cmdline') or []
+                cmdline_str = ' '.join(cmdline).lower()
+                if 'lanceur_automatique' in cmdline_str or 'bot_btcusd' in cmdline_str or 'adaptive_engine' in cmdline_str:
+                    print(f"  → Arrêt PID {proc.info['pid']}: {cmdline_str[:80]}")
+                    proc.terminate()
+                    killed += 1
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        if killed:
+            print(f"✅ {killed} processus ForexBot arrêtés")
+        else:
+            print("ℹ️ Aucun processus ForexBot trouvé")
         time.sleep(2)
     except Exception as e:
         print(f"⚠️ Erreur arrêt processus: {e}")
