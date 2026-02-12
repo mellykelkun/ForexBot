@@ -1,6 +1,6 @@
 """
 BTCUSD MICRO SCALPER V8 PRO - Version stable (IA uniquement)
-Décision d'entrée/sortie via /api/decision (Groq)
+Décision d'entrée/sortie via /api/decision (Multi-Provider: Groq/OpenAI/DeepSeek)
 """
 
 import argparse
@@ -257,6 +257,110 @@ class BTCUSDMicroScalperPro:
 
         return float(normalized)
 
+    def _get_recent_trade_history(self, symbol: str, max_trades: int = 10) -> list:
+        """
+        Récupère les N derniers trades fermés depuis MT5 pour ce symbole.
+        Retourne une liste de résumés (profit, raison de clôture, etc.)
+        pour que l'IA puisse analyser ses propres performances.
+        """
+        try:
+            from datetime import timedelta
+            now = datetime.now()
+            # Chercher les deals des dernières 48h
+            deals = mt5.history_deals_get(now - timedelta(hours=48), now, group=f"*{symbol}*")
+            if not deals:
+                return []
+
+            # Filtrer uniquement les clôtures (DEAL_ENTRY_OUT=1) et prendre les plus récents
+            closed_trades = []
+            for deal in deals:
+                if deal.entry != 1:  # 1 = DEAL_ENTRY_OUT (fermeture)
+                    continue
+                # Déterminer la raison de clôture
+                reason_map = {
+                    0: "manual",       # CLIENT
+                    3: "stop_loss",    # SL
+                    4: "take_profit",  # TP
+                    5: "stop_out",     # STOP OUT (margin call)
+                    6: "rollover",
+                    7: "vmargin",
+                }
+                close_reason = reason_map.get(deal.reason, f"other({deal.reason})")
+
+                closed_trades.append({
+                    "ticket": deal.ticket,
+                    "type": "BUY" if deal.type == 0 else "SELL",
+                    "volume": deal.volume,
+                    "price": round(deal.price, 6),
+                    "profit": round(deal.profit, 2),
+                    "commission": round(deal.commission, 2) if deal.commission else 0.0,
+                    "swap": round(deal.swap, 2) if deal.swap else 0.0,
+                    "close_reason": close_reason,
+                    "time": datetime.fromtimestamp(deal.time).strftime("%Y-%m-%d %H:%M"),
+                })
+
+            # Prendre les N derniers
+            closed_trades = closed_trades[-max_trades:]
+
+            return closed_trades
+        except Exception as e:
+            logging.warning("⚠️ Impossible de récupérer l'historique trades: %s", e)
+            return []
+
+    def _build_trade_performance_summary(self, symbol: str) -> dict:
+        """
+        Construit un résumé de performance que l'IA peut utiliser pour
+        s'auto-évaluer et apprendre de ses erreurs.
+        """
+        history = self._get_recent_trade_history(symbol, max_trades=15)
+        if not history:
+            return {"recent_trades": [], "stats": {"total": 0}}
+
+        total = len(history)
+        wins = [t for t in history if t["profit"] > 0]
+        losses = [t for t in history if t["profit"] < 0]
+        sl_hits = [t for t in history if t["close_reason"] == "stop_loss"]
+        tp_hits = [t for t in history if t["close_reason"] == "take_profit"]
+
+        total_profit = sum(t["profit"] for t in wins)
+        total_loss = sum(t["profit"] for t in losses)
+        net_pnl = total_profit + total_loss
+
+        # Séquence actuelle (streak)
+        streak = 0
+        streak_type = None
+        for t in reversed(history):
+            if streak_type is None:
+                streak_type = "win" if t["profit"] > 0 else "loss"
+                streak = 1
+            elif (streak_type == "win" and t["profit"] > 0) or (streak_type == "loss" and t["profit"] <= 0):
+                streak += 1
+            else:
+                break
+
+        stats = {
+            "total": total,
+            "wins": len(wins),
+            "losses": len(losses),
+            "win_rate_pct": round(len(wins) / total * 100, 1) if total > 0 else 0,
+            "net_pnl": round(net_pnl, 2),
+            "total_profit": round(total_profit, 2),
+            "total_loss": round(total_loss, 2),
+            "avg_win": round(total_profit / len(wins), 2) if wins else 0,
+            "avg_loss": round(total_loss / len(losses), 2) if losses else 0,
+            "sl_hit_count": len(sl_hits),
+            "tp_hit_count": len(tp_hits),
+            "current_streak": f"{streak} consecutive {'wins' if streak_type == 'win' else 'losses'}" if streak_type else "none",
+        }
+
+        # Garder seulement les 5 derniers trades pour le payload (économie de tokens)
+        recent = history[-5:]
+
+        return {
+            "recent_trades": recent,
+            "stats": stats,
+        }
+
     def _build_payload(self, symbol: str) -> Optional[Dict[str, Any]]:
         """Construit le payload sémantique compressé pour l'IA."""
         tick = self._get_symbol_tick(symbol)
@@ -333,6 +437,14 @@ class BTCUSDMicroScalperPro:
             },
         )
 
+        # ── Historique des performances IA (auto-évaluation) ──
+        try:
+            perf = self._build_trade_performance_summary(symbol)
+            if perf.get("stats", {}).get("total", 0) > 0:
+                payload["my_trade_history"] = perf
+        except Exception as e:
+            logging.warning("⚠️ Historique performance non disponible: %s", e)
+
         # Stocker l'ATR pour le fallback SL/TP
         payload["_atr_m1"] = atr_m1
         payload["_symbol_point"] = symbol_info.point if symbol_info else 0.00001
@@ -342,17 +454,19 @@ class BTCUSDMicroScalperPro:
     def _request_ai_decision(self, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         try:
             payload = _sanitize_for_json(payload)
+            # Retirer les champs internes (préfixés _) avant envoi à l'IA
+            ai_payload = {k: v for k, v in payload.items() if not k.startswith("_")}
             try:
-                payload_size = len(json.dumps(payload, ensure_ascii=False))
+                payload_size = len(json.dumps(ai_payload, ensure_ascii=False))
                 try:
-                    get_logger().info(f"📦 Payload IA {payload.get('symbol')}: {payload_size} bytes")
+                    get_logger().info(f"📦 Payload IA {ai_payload.get('symbol')}: {payload_size} bytes")
                 except Exception:
-                    logging.info("📦 Payload IA %s: %s bytes", payload.get("symbol"), payload_size)
+                    logging.info("📦 Payload IA %s: %s bytes", ai_payload.get("symbol"), payload_size)
             except Exception:
                 pass
             resp = requests.post(
                 AI_DECISION_URL,
-                json=payload,
+                json=ai_payload,
                 timeout=max(self.request_timeout, 10),
             )
             if resp.status_code != 200:
@@ -374,7 +488,7 @@ class BTCUSDMicroScalperPro:
                 time.sleep(0.5)
                 resp = requests.post(
                     AI_DECISION_URL,
-                    json=payload,
+                    json=ai_payload,
                     timeout=max(self.request_timeout, 10),
                 )
                 if resp.status_code != 200:
@@ -628,13 +742,28 @@ class BTCUSDMicroScalperPro:
         atr_value = (payload or {}).get("_atr_m1") or 0
         sym_point = (payload or {}).get("_symbol_point") or (symbol_info.point if symbol_info else 0.00001)
 
+        # Récupérer tick_value, risk_multiplier et max_lot depuis MT5 + SYMBOLS_CONFIG
+        tick_value = symbol_info.trade_tick_value if symbol_info and symbol_info.trade_tick_value else 1.0
+        sym_cfg = SYMBOLS_CONFIG.get(symbol, {})
+        risk_mult = sym_cfg.get("risk_multiplier", 1.0)
+        config_max_lot = sym_cfg.get("max_lot", 0.03)
+        config_min_lot = sym_cfg.get("min_lot", 0.001)
+
+        # Plafond de volume = min(broker max, config max)
+        effective_max = min(
+            symbol_info.volume_max if symbol_info and symbol_info.volume_max else 100.0,
+            config_max_lot,
+        )
+
         desired_volume = self.risk_guardian.calculate_position_size(
             balance=balance,
             atr_value=atr_value if atr_value > 0 else sym_point * 100,
             symbol_point=sym_point,
-            volume_min=symbol_info.volume_min if symbol_info else 0.01,
-            volume_max=symbol_info.volume_max if symbol_info else 100.0,
+            tick_value=tick_value,
+            volume_min=max(symbol_info.volume_min if symbol_info else 0.01, config_min_lot),
+            volume_max=effective_max,
             volume_step=symbol_info.volume_step if symbol_info else 0.01,
+            risk_multiplier=risk_mult,
         )
         volume = self._normalize_volume(symbol_info, desired_volume)
         if volume is None:
@@ -661,6 +790,20 @@ class BTCUSDMicroScalperPro:
             sl_from_ia=sl_ia,
             tp_from_ia=tp_ia,
         )
+
+        # ── Validation des stops vs stop level broker ──
+        stops_level = symbol_info.trade_stops_level if symbol_info else 0
+        spread_pts = (tick.ask - tick.bid) / sym_point if sym_point > 0 else 0
+        sl, tp = self.risk_guardian.validate_stops_distance(
+            action=action,
+            entry_price=price,
+            sl=sl,
+            tp=tp,
+            stops_level=int(stops_level),
+            symbol_point=sym_point,
+            spread_points=spread_pts,
+        )
+
         if abs(volume - desired_volume) > 1e-9:
             logging.warning(
                 "⚠️ Volume ajusté pour %s: demandé=%.6f, normalisé=%.6f (min=%.6f, step=%.6f)",
@@ -670,6 +813,9 @@ class BTCUSDMicroScalperPro:
                 symbol_info.volume_min if symbol_info else 0.0,
                 symbol_info.volume_step if symbol_info else 0.0,
             )
+
+        logging.info("📤 Ordre %s %s: vol=%.4f, prix=%.5f, SL=%.5f, TP=%.5f, stops_level=%d",
+                      action, symbol, volume, price, sl, tp, int(stops_level))
 
         request = {
             "action": mt5.TRADE_ACTION_DEAL,

@@ -188,6 +188,7 @@ class RiskGuardian:
         balance: float,
         atr_value: float,
         symbol_point: float,
+        tick_value: float,
         volume_min: float,
         volume_max: float,
         volume_step: float,
@@ -195,19 +196,28 @@ class RiskGuardian:
     ) -> float:
         """
         Position sizing basé sur le risque et l'ATR.
-        Volume = (balance * risk%) / (ATR * tick_value_approx)
+        Volume = (balance * risk% * multiplier) / (ATR_ticks * tick_value)
+
+        tick_value = symbol_info.trade_tick_value (valeur monétaire d'1 tick pour 1 lot)
         """
-        if atr_value <= 0 or symbol_point <= 0:
+        if atr_value <= 0 or symbol_point <= 0 or tick_value <= 0:
+            logger.warning("⚠️ Position sizing: paramètre invalide (atr=%.6f, point=%.6f, tick_val=%.4f) → volume_min",
+                           atr_value, symbol_point, tick_value)
             return volume_min
 
         risk_amount = balance * (self.risk_per_trade_pct / 100.0) * risk_multiplier
-        # ATR en nombre de points
-        atr_points = atr_value / symbol_point
-        if atr_points <= 0:
+        # ATR en nombre de ticks (points)
+        atr_ticks = atr_value / symbol_point
+        if atr_ticks <= 0:
             return volume_min
 
-        # Volume approximatif
-        desired = risk_amount / (atr_points * symbol_point * 100)
+        # Volume = risque monétaire / (nombre de ticks de SL × valeur d'1 tick par lot)
+        desired = risk_amount / (atr_ticks * tick_value)
+
+        logger.info("📐 Position sizing: balance=%.2f, risk_amount=%.2f, atr=%.6f, "
+                     "atr_ticks=%.1f, tick_value=%.4f, raw_volume=%.6f",
+                     balance, risk_amount, atr_value, atr_ticks, tick_value, desired)
+
         desired = max(desired, volume_min)
         desired = min(desired, volume_max)
 
@@ -219,6 +229,54 @@ class RiskGuardian:
         desired = max(desired, volume_min)
         desired = min(desired, volume_max)
         return round(desired, 6)
+
+    # ──────────────────────────────────────────────────────────
+    #  Validation des stops vs stop level broker
+    # ──────────────────────────────────────────────────────────
+
+    @staticmethod
+    def validate_stops_distance(
+        action: str,
+        entry_price: float,
+        sl: float,
+        tp: float,
+        stops_level: int,
+        symbol_point: float,
+        spread_points: float = 0.0,
+    ) -> Tuple[float, float]:
+        """
+        Vérifie que SL et TP respectent la distance minimale du broker
+        (trade_stops_level). Si non, élargit au minimum autorisé.
+        spread_points = spread actuel en points (pour ajouter une marge).
+        """
+        # Distance minimale en prix = (stops_level + marge spread) × point
+        min_distance = (stops_level + spread_points + 5) * symbol_point  # +5 pts de sécurité
+
+        if min_distance <= 0:
+            return sl, tp
+
+        sl_dist = abs(sl - entry_price)
+        tp_dist = abs(tp - entry_price)
+
+        if sl_dist < min_distance:
+            old_sl = sl
+            if action == "BUY":
+                sl = entry_price - min_distance
+            else:
+                sl = entry_price + min_distance
+            logger.warning("⚠️ SL trop proche (%.5f, dist=%.5f < min=%.5f) → ajusté: %.5f",
+                           old_sl, sl_dist, min_distance, sl)
+
+        if tp_dist < min_distance:
+            old_tp = tp
+            if action == "BUY":
+                tp = entry_price + min_distance
+            else:
+                tp = entry_price - min_distance
+            logger.warning("⚠️ TP trop proche (%.5f, dist=%.5f < min=%.5f) → ajusté: %.5f",
+                           old_tp, tp_dist, min_distance, tp)
+
+        return round(sl, 6), round(tp, 6)
 
     # ──────────────────────────────────────────────────────────
     #  SL/TP de secours (ATR-based)

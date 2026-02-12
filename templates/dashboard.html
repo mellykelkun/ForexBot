@@ -55,6 +55,14 @@
     .row { display:flex; gap:12px; align-items:center; flex-wrap: wrap; }
     .kpi { display:flex; gap:10px; align-items:center; }
     .kpi b { color: var(--accent); }
+    /* Provider selector */
+    .provider-bar { display:flex; align-items:center; gap:12px; padding:10px 24px; background:#0d1525; border-bottom:1px solid var(--border); flex-wrap:wrap; }
+    .provider-bar label { font-weight:600; color: var(--muted); font-size:13px; }
+    .provider-btn { padding:6px 16px; border-radius:10px; background:#111827; border:1px solid var(--border); color:var(--text); cursor:pointer; font-size:13px; font-weight:600; transition: all .2s; }
+    .provider-btn:hover { border-color: var(--accent); }
+    .provider-btn.active { background:#1e3a5f; border-color:var(--accent); color:var(--accent); box-shadow: 0 0 10px rgba(34,211,238,.2); }
+    .provider-btn.unconfigured { opacity:0.4; cursor:not-allowed; }
+    .provider-info { font-size:12px; color:var(--muted); margin-left:auto; }
     .scroll {
       overflow: auto;
       max-height: 260px;
@@ -86,6 +94,12 @@
     </div>
   </div>
 </header>
+
+<div class="provider-bar" id="providerBar">
+  <label>🤖 Provider IA :</label>
+  <div id="providerButtons"></div>
+  <span class="provider-info" id="providerInfo">Chargement...</span>
+</div>
 
 <div class="grid">
   <div class="card">
@@ -262,9 +276,61 @@ async function purgeLogs() {
   setTimeout(refresh, 500);
 }
 
+// ── Provider IA ─────────────────────────────────
+async function loadProviders() {
+  try {
+    const resp = await fetchJson('/api/ai-provider');
+    const data = resp.data;
+    const providers = data.providers || [];
+    const active = data.active_provider || '';
+    const model = data.active_model || '';
+
+    const btns = providers.map(p => {
+      const cls = ['provider-btn'];
+      if (p.active) cls.push('active');
+      if (!p.configured) cls.push('unconfigured');
+      const label = p.provider.toUpperCase();
+      const modelShort = p.model.length > 25 ? p.model.substring(0, 22) + '...' : p.model;
+      const title = p.configured
+        ? `Modèle: ${p.model}`
+        : `Non configuré — clé API manquante`;
+      return `<button class="${cls.join(' ')}" title="${title}" onclick="switchProvider('${p.provider}')" ${!p.configured ? 'disabled' : ''}>${label}</button>`;
+    }).join(' ');
+
+    document.getElementById('providerButtons').innerHTML = btns || '<span class="muted">Aucun</span>';
+    document.getElementById('providerInfo').textContent = `Actif: ${active.toUpperCase()} — ${model}`;
+  } catch (e) {
+    document.getElementById('providerButtons').innerHTML = '<span class="muted">Indisponible</span>';
+    document.getElementById('providerInfo').textContent = 'Erreur: ' + e;
+  }
+}
+
+async function switchProvider(name) {
+  const ok = confirm(`Changer le provider IA vers "${name.toUpperCase()}" ?\nLes règles restent identiques.`);
+  if (!ok) return;
+  try {
+    const r = await fetch('/api/ai-provider', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: name }),
+    });
+    const data = await r.json();
+    if (data.success) {
+      alert(`✅ Provider changé: ${data.previous.toUpperCase()} → ${data.active.toUpperCase()}\nModèle: ${data.model}`);
+    } else {
+      alert(`❌ Erreur: ${data.error}`);
+    }
+    await loadProviders();
+  } catch (e) {
+    alert('Erreur switching: ' + e);
+  }
+}
+
 setInterval(refresh, 5000);
+setInterval(loadProviders, 10000);
 updateNow();
 refresh();
+loadProviders();
 </script>
 </body>
 </html>

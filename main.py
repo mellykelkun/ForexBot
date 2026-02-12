@@ -246,11 +246,12 @@ def start_ai_engine():
         from backend.ai.adaptive_engine import run_ai_server
         
         logger = get_logger()
-        logger.info("🧠 Démarrage du moteur IA Groq...")
+        _ai_provider = os.getenv("ACTIVE_AI_PROVIDER", "groq").upper()
+        logger.info(f"🧠 Démarrage du moteur IA Multi-Provider (actif: {_ai_provider})...")
         
         thread = threading.Thread(target=run_ai_server, daemon=True)
         thread.start()
-        logger.info("✅ Moteur IA Groq démarré")
+        logger.info(f"✅ Moteur IA Multi-Provider démarré (provider: {_ai_provider})")
         return thread
         
     except Exception as e:
@@ -346,8 +347,14 @@ def main():
         logger.info(f"⚡ Risk/Trade: {config.RISK_PER_TRADE}%")
         logger.info(f"📈 Stratégie: {args.strategy}")
         logger.info(f"🎯 Mode: {args.mode}")
+        _provider_label = os.getenv("ACTIVE_AI_PROVIDER", "groq").upper()
+        _req_conf = os.getenv("REQUIRED_CONFIDENCE", "0.90")
+        _max_loss = os.getenv("MAX_DAILY_LOSS_PCT", "2.0")
         logger.info(f"🧠 IA: {'✅ ACTIF' if ai_engine else '❌ INACTIF'}")
-        logger.info("🛡️  Sortie intelligente: pilotée par Groq")
+        logger.info(f"🤖 Provider IA actif: {_provider_label}")
+        logger.info(f"🎯 Confidence requise: {_req_conf}")
+        logger.info(f"🛡️  Perte max journalière: {_max_loss}%")
+        logger.info("📐 SL: 2.0× ATR | TP: R:R 2.0:1 | Sortie pilotée par IA")
         logger.info("=" * 60)
         logger.info("🚀 Démarrage des opérations de trading...")
 

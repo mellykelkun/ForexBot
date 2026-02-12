@@ -15,6 +15,7 @@ from backend.config.config_micro_scalping_pro import SYMBOLS_CONFIG
 from backend.security.auth import verify_key, require_dashboard_auth, get_access_key_hash
 
 CONTROL_URL = os.getenv("CONTROL_URL", "http://127.0.0.1:5010")
+AI_ENGINE_URL = os.getenv("AI_ENGINE_URL", "http://127.0.0.1:5003")
 DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", "5004"))
 
 TEMPLATES_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "templates"))
@@ -288,6 +289,40 @@ def api_symbols():
             "enabled": bool(cfg.get("enabled")),
         })
     return jsonify({"symbols": symbols})
+
+
+@app.route("/api/ai-provider")
+@require_dashboard_auth
+def api_ai_provider_get():
+    """Récupère le statut des providers IA depuis l'AI Engine."""
+    try:
+        token = os.getenv("API_SECRET_TOKEN", "")
+        resp = requests.get(
+            f"{AI_ENGINE_URL}/api/providers",
+            headers={"X-API-Token": token},
+            timeout=3,
+        )
+        return jsonify(resp.json()), resp.status_code
+    except Exception as e:
+        return jsonify({"error": str(e)}), 503
+
+
+@app.route("/api/ai-provider", methods=["POST"])
+@require_dashboard_auth
+def api_ai_provider_switch():
+    """Change le provider IA actif via l'AI Engine."""
+    try:
+        data = request.get_json() or {}
+        token = os.getenv("API_SECRET_TOKEN", "")
+        resp = requests.post(
+            f"{AI_ENGINE_URL}/api/switch-provider",
+            json=data,
+            headers={"X-API-Token": token, "Content-Type": "application/json"},
+            timeout=5,
+        )
+        return jsonify(resp.json()), resp.status_code
+    except Exception as e:
+        return jsonify({"error": str(e)}), 503
 
 
 @app.route("/")

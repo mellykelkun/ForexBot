@@ -192,6 +192,12 @@ class IntelligentProcessManager:
         # 🔧 CORRECTION : Chemins absolus
         base_dir = os.path.dirname(os.path.abspath(__file__))
         
+        # Paramètres depuis .env (avant process_configs qui les utilise)
+        self._risk_pct = float(os.getenv("RISK_PER_TRADE", "0.5"))
+        self._required_confidence = float(os.getenv("REQUIRED_CONFIDENCE", "0.90"))
+        self._max_daily_loss = float(os.getenv("MAX_DAILY_LOSS_PCT", "2.0"))
+        self._active_provider = os.getenv("ACTIVE_AI_PROVIDER", "groq").upper()
+
         self.process_configs = {
             'ai_engine': {
                 'command': [sys.executable, '-m', 'backend.ai.adaptive_engine'],
@@ -221,7 +227,7 @@ class IntelligentProcessManager:
                     '--strategy', 'MICRO',
                     # 🎯 SORTIE INTELLIGENTE MAINTENANT ACTIVÉE PAR DÉFAUT
                     '--ai-engine',
-                    '--risk', '0.5'
+                    '--risk', str(self._risk_pct)
                 ],
                 'port': None,
                 'health_check': None,
@@ -660,7 +666,7 @@ class IntelligentLauncher:
         """Demarre l'ensemble du systeme - VERSION AMÉLIORÉE"""
         print("=" * 60)
         print("BTCUSD MICRO SCALPER V8 - LANCEUR INTELLIGENT OPTIMISÉ")
-        print("🧠 IA DISTANTE (Groq)")
+        print(f"🧠 IA MULTI-PROVIDER (actif: {self.process_manager._active_provider})")
         print("🔄 REDÉMARRAGE INTELLIGENT ACTIF")
         print("=" * 60)
         
@@ -689,8 +695,17 @@ class IntelligentLauncher:
                 # Vérifier que le bot utilise bien main.py
                 bot_config = self.process_manager.process_configs['bot']
                 if 'main.py' in ' '.join(bot_config['command']):
+                    # Détecter le provider actif via l'AI Engine
+                    _prov = self.process_manager._active_provider
+                    try:
+                        _r = requests.get("http://localhost:5003/api/providers", timeout=2)
+                        if _r.status_code == 200:
+                            _d = _r.json()
+                            _prov = _d.get("active_provider", _prov).upper()
+                    except Exception:
+                        pass
                     logging.info("✅ SYSTÈME DE SORTIE INTELLIGENTE ACTIVÉ")
-                    logging.info("   🧠 Groq connecté")
+                    logging.info("   🧠 Provider IA: %s", _prov)
                     logging.info("   🛡️  Guardian System injecté")
                     logging.info("   📊 Monitoring des sorties actif")
                 else:
@@ -709,16 +724,31 @@ class IntelligentLauncher:
             memory_thread = threading.Thread(target=self.process_manager.memory_manager.periodic_cleanup, daemon=True)
             memory_thread.start()
             
+            # Récupérer le provider actif depuis l'AI Engine
+            _active_prov = self.process_manager._active_provider
+            _active_model = "?"
+            try:
+                _r = requests.get("http://localhost:5003/api/providers", timeout=2)
+                if _r.status_code == 200:
+                    _d = _r.json()
+                    _active_prov = _d.get("active_provider", _active_prov).upper()
+                    _active_model = _d.get("active_model", "?")
+            except Exception:
+                pass
+
+            pm = self.process_manager
             print("\n" + "=" * 60)
             print("✅ SYSTÈME MICRO SCALPING OPTIMISÉ LANCÉ!")
-            print("🤖 Moteur IA: http://localhost:5003")
+            print(f"🤖 Moteur IA: http://localhost:5003 ({_active_prov} — {_active_model})")
             print("🖥️  Dashboard: http://localhost:5004")
             print("🔧 Monitoring: Redémarrage intelligent actif")
             print("💾 Gestion mémoire: Optimisée")
             print("=" * 60)
             print("ALERTE: SYSTEME DE TRADING ACTIF!")
             print("CAPITAL: Solde MT5 réel utilisé")
-            print("RISQUE: Risk: 0.5% | TP: 3 pips | SL: 5 pips")
+            print(f"RISQUE: Risk/Trade: {pm._risk_pct}% | SL: 2.0× ATR | TP: R:R 2.0:1")
+            print(f"SÉCURITÉ: Confidence min: {pm._required_confidence} | Perte max/jour: {pm._max_daily_loss}%")
+            print(f"PROVIDER IA: {_active_prov} ({_active_model})")
             print("ARRET: Ctrl+C pour arreter gracieusement")
             print("=" * 60)
             
