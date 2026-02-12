@@ -98,10 +98,19 @@ def _purge_all_logs() -> dict:
                 if _truncate(path):
                     purged.append(path)
 
+    # Nettoyage des vieux backups
+    old_backups_removed = []
+    try:
+        from scripts.maintenance.purge_logs import cleanup_old_backups
+        old_backups_removed = cleanup_old_backups()
+    except Exception:
+        pass
+
     return {
         "timestamp": datetime.now().isoformat(),
         "purged": purged,
         "failed": failed,
+        "old_backups_removed": old_backups_removed,
     }
 
 

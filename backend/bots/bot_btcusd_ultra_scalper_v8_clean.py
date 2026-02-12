@@ -570,13 +570,16 @@ class BTCUSDMicroScalperPro:
         if os.path.exists("process_manager.log"):
             shutil.copy2("process_manager.log", os.path.join(backup_root, "process_manager.log"))
 
-        # Rotation des backups : supprimer les dossiers > 7 jours
-        self._cleanup_old_backups(max_age_days=7)
+        # Rotation des backups : supprimer les dossiers selon BACKUP_RETENTION_DAYS
+        _retention = int(os.getenv("BACKUP_RETENTION_DAYS", "7"))
+        self._cleanup_old_backups(max_age_days=_retention)
 
         self.backup_last_run = now
 
-    def _cleanup_old_backups(self, max_age_days: int = 7):
-        """Supprime les dossiers de backup plus vieux que max_age_days."""
+    def _cleanup_old_backups(self, max_age_days: int = None):
+        """Supprime les dossiers de backup plus vieux que max_age_days (défaut: BACKUP_RETENTION_DAYS)."""
+        if max_age_days is None:
+            max_age_days = int(os.getenv("BACKUP_RETENTION_DAYS", "7"))
         backup_base = "backups"
         if not os.path.isdir(backup_base):
             return
