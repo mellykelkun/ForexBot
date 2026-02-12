@@ -36,7 +36,7 @@ class GroqService:
         user_payload: Dict[str, Any],
         timeout: int = 20,
         temperature: float = 0.2,
-        max_tokens: int = 200,
+        max_tokens: int = 300,
     ) -> Optional[Dict[str, Any]]:
         if not self.api_key:
             self.logger.warning("GROQ_API_KEY manquant")

@@ -1,6 +1,7 @@
-"""Purge manuelle de tous les logs (truncate)."""
+"""Purge manuelle de tous les logs (truncate) — avec backup préalable."""
 
 import os
+import shutil
 from datetime import datetime
 
 
@@ -21,6 +22,21 @@ def _truncate(path: str) -> bool:
 def purge_all_logs() -> dict:
     purged = []
     failed = []
+
+    # Backup avant purge
+    try:
+        backup_dir = os.path.join("backups", datetime.now().strftime("%Y%m%d"))
+        os.makedirs(backup_dir, exist_ok=True)
+        if os.path.isdir(LOG_DIR):
+            for name in os.listdir(LOG_DIR):
+                src = os.path.join(LOG_DIR, name)
+                if os.path.isfile(src):
+                    shutil.copy2(src, os.path.join(backup_dir, name))
+        for name in ROOT_LOGS:
+            if os.path.isfile(name):
+                shutil.copy2(name, os.path.join(backup_dir, os.path.basename(name)))
+    except Exception:
+        pass
 
     if os.path.isdir(LOG_DIR):
         for name in os.listdir(LOG_DIR):

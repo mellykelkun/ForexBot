@@ -14,6 +14,7 @@ import requests
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
+from logging.handlers import RotatingFileHandler
 import threading
 import json
 os.environ['PYTHONIOENCODING'] = 'utf-8'
@@ -255,7 +256,10 @@ class IntelligentProcessManager:
             format='%(asctime)s.%(msecs)03d [%(levelname)-8s] %(message)s',
             datefmt='%H:%M:%S',
             handlers=[
-                logging.FileHandler('process_manager.log', encoding='utf-8'),
+                RotatingFileHandler(
+                    'process_manager.log', encoding='utf-8',
+                    maxBytes=10 * 1024 * 1024, backupCount=3
+                ),
                 logging.StreamHandler()
             ]
         )

@@ -456,7 +456,28 @@ class BTCUSDMicroScalperPro:
         if os.path.exists("process_manager.log"):
             shutil.copy2("process_manager.log", os.path.join(backup_root, "process_manager.log"))
 
+        # Rotation des backups : supprimer les dossiers > 7 jours
+        self._cleanup_old_backups(max_age_days=7)
+
         self.backup_last_run = now
+
+    def _cleanup_old_backups(self, max_age_days: int = 7):
+        """Supprime les dossiers de backup plus vieux que max_age_days."""
+        backup_base = "backups"
+        if not os.path.isdir(backup_base):
+            return
+        cutoff = datetime.now() - timedelta(days=max_age_days)
+        for name in sorted(os.listdir(backup_base)):
+            folder = os.path.join(backup_base, name)
+            if not os.path.isdir(folder):
+                continue
+            try:
+                folder_date = datetime.strptime(name, "%Y%m%d")
+                if folder_date < cutoff:
+                    shutil.rmtree(folder, ignore_errors=True)
+                    logging.info("🗑️ Backup ancien supprimé: %s", folder)
+            except ValueError:
+                continue
 
     def _maybe_purge_logs(self):
         now = datetime.now()
@@ -649,9 +670,6 @@ class BTCUSDMicroScalperPro:
                 symbol_info.volume_min if symbol_info else 0.0,
                 symbol_info.volume_step if symbol_info else 0.0,
             )
-        price = tick.ask if action == "BUY" else tick.bid
-        sl = decision.get("sl_price")
-        tp = decision.get("tp_price")
 
         request = {
             "action": mt5.TRADE_ACTION_DEAL,

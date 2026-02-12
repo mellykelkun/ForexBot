@@ -3,6 +3,7 @@
 import json
 import os
 import secrets
+import shutil
 from datetime import datetime
 from typing import List
 
@@ -58,6 +59,18 @@ def _purge_all_logs() -> dict:
     purged = []
     failed = []
 
+    # Backup rapide avant purge
+    try:
+        backup_dir = os.path.join("backups", datetime.now().strftime("%Y%m%d"))
+        os.makedirs(backup_dir, exist_ok=True)
+        if os.path.isdir(LOG_DIR):
+            for name in os.listdir(LOG_DIR):
+                src = os.path.join(LOG_DIR, name)
+                if os.path.isfile(src):
+                    shutil.copy2(src, os.path.join(backup_dir, name))
+    except Exception:
+        pass
+
     if os.path.isdir(LOG_DIR):
         for name in os.listdir(LOG_DIR):
             if not name.lower().endswith(ALLOWED_SUFFIXES):
@@ -75,6 +88,14 @@ def _purge_all_logs() -> dict:
                 purged.append(name)
             else:
                 failed.append(name)
+
+    # Purge aussi les rapports temporaires > 10 MB
+    if os.path.isdir("reports"):
+        for name in os.listdir("reports"):
+            path = os.path.join("reports", name)
+            if os.path.isfile(path) and os.path.getsize(path) > 10 * 1024 * 1024:
+                if _truncate(path):
+                    purged.append(path)
 
     return {
         "timestamp": datetime.now().isoformat(),
