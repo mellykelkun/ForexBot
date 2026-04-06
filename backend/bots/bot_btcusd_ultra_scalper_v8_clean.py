@@ -738,12 +738,14 @@ class BTCUSDMicroScalperPro:
             # ── Vérification fraîcheur : si l'IA a pris trop longtemps,
             # les données du payload sont peut-être obsolètes ──
             # Note : les indicateurs (RSI, EMA, tendance) ne changent pas
-            # significativement en <2min. Le prix d'exécution est recalculé
+            # significativement en <3min. Le prix d'exécution est recalculé
             # en temps réel dans executer_trade() via mt5.symbol_info_tick().
+            # Avec 8 symboles et Ollama ~30-60s/appel, un cycle complet
+            # peut prendre 4-8 minutes — threshold adapté en conséquence.
             payload_age = (datetime.now() - payload_built_at).total_seconds()
-            if payload_age > 120:
+            if payload_age > 180:
                 logging.warning(
-                    "⏰ Données obsolètes (%s): payload vieux de %.0fs (>120s), décision ignorée",
+                    "⏰ Données obsolètes (%s): payload vieux de %.0fs (>180s), décision ignorée",
                     symbol, payload_age,
                 )
                 self.journal.log_event({
