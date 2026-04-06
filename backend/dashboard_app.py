@@ -309,7 +309,7 @@ def api_ai_provider_get():
         resp = requests.get(
             f"{AI_ENGINE_URL}/api/providers",
             headers={"X-API-Token": token},
-            timeout=3,
+            timeout=10,
         )
         return jsonify(resp.json()), resp.status_code
     except Exception as e:

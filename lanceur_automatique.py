@@ -642,7 +642,7 @@ class IntelligentLauncher:
     def get_optimized_startup_sequence(self):
         """Retourne la séquence optimisée pour la sortie intelligente"""
         return [
-            'ai_engine',           # ✅ DEUXIÈME - IA distante (Groq)
+            'ai_engine',           # ✅ DEUXIÈME - IA (Groq/OpenAI/DeepSeek/Ollama)
             'dashboard',
             'bot'                  # ✅ DERNIER - Dépend de tout le système
         ]
@@ -697,15 +697,23 @@ class IntelligentLauncher:
                 if 'main.py' in ' '.join(bot_config['command']):
                     # Détecter le provider actif via l'AI Engine
                     _prov = self.process_manager._active_provider
+                    _all_provs: list[str] = []
                     try:
                         _r = requests.get("http://localhost:5003/api/providers", timeout=2)
                         if _r.status_code == 200:
                             _d = _r.json()
                             _prov = _d.get("active_provider", _prov).upper()
+                            _all_provs = [
+                                p["provider"].upper() + (" ✓" if p.get("active") else "")
+                                for p in _d.get("providers", [])
+                                if p.get("configured")
+                            ]
                     except Exception:
                         pass
                     logging.info("✅ SYSTÈME DE SORTIE INTELLIGENTE ACTIVÉ")
-                    logging.info("   🧠 Provider IA: %s", _prov)
+                    logging.info("   🧠 Provider IA actif: %s", _prov)
+                    if _all_provs:
+                        logging.info("   📡 Providers disponibles: %s", ", ".join(_all_provs))
                     logging.info("   🛡️  Guardian System injecté")
                     logging.info("   📊 Monitoring des sorties actif")
                 else:
@@ -727,12 +735,18 @@ class IntelligentLauncher:
             # Récupérer le provider actif depuis l'AI Engine
             _active_prov = self.process_manager._active_provider
             _active_model = "?"
+            _configured_provs: list[str] = []
             try:
                 _r = requests.get("http://localhost:5003/api/providers", timeout=2)
                 if _r.status_code == 200:
                     _d = _r.json()
                     _active_prov = _d.get("active_provider", _active_prov).upper()
                     _active_model = _d.get("active_model", "?")
+                    _configured_provs = [
+                        p["provider"].upper()
+                        for p in _d.get("providers", [])
+                        if p.get("configured")
+                    ]
             except Exception:
                 pass
 
@@ -749,6 +763,8 @@ class IntelligentLauncher:
             print(f"RISQUE: Risk/Trade: {pm._risk_pct}% | SL: 2.0× ATR | TP: R:R 2.0:1")
             print(f"SÉCURITÉ: Confidence min: {pm._required_confidence} | Perte max/jour: {pm._max_daily_loss}%")
             print(f"PROVIDER IA: {_active_prov} ({_active_model})")
+            if _configured_provs:
+                print(f"PROVIDERS DISPONIBLES: {', '.join(_configured_provs)}")
             print("ARRET: Ctrl+C pour arreter gracieusement")
             print("=" * 60)
             

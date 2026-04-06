@@ -17,10 +17,10 @@ SYMBOLS_CONFIG: Dict[str, Dict[str, Any]] = {
         "min_lot": 0.001,
         "preferred_timeframes": ['M1', 'M5', 'M15'],
         "spread_limits": {
-            "max": 100.0,      # points
-            "high": 50.0,
-            "normal": 20.0,
-            "ideal": 10.0
+            "max": 8000.0,     # points (spread BTC typique XM: ~5000 pts)
+            "high": 6000.0,
+            "normal": 5000.0,
+            "ideal": 3000.0
         },
         "volatility_profile": "HIGH",
         "trading_hours": "24/7"
@@ -32,8 +32,8 @@ SYMBOLS_CONFIG: Dict[str, Dict[str, Any]] = {
         "min_lot": 0.001,
         "preferred_timeframes": ['M5', 'M15', 'H1'],
         "spread_limits": {
-            "max": 200.0,
-            "high": 100.0,
+            "max": 100.0,      # points (spread GOLD typique XM: ~50 pts)
+            "high": 70.0,
             "normal": 50.0,
             "ideal": 25.0
         },
@@ -47,10 +47,10 @@ SYMBOLS_CONFIG: Dict[str, Dict[str, Any]] = {
         "min_lot": 0.001,
         "preferred_timeframes": ['M15', 'H1', 'H4'],
         "spread_limits": {
-            "max": 500.0,
-            "high": 250.0,
-            "normal": 100.0,
-            "ideal": 50.0
+            "max": 300.0,      # points (spread USDZAR typique XM: ~157 pts)
+            "high": 200.0,
+            "normal": 150.0,
+            "ideal": 80.0
         },
         "volatility_profile": "HIGH",
         "trading_hours": "24/5"
@@ -62,10 +62,10 @@ SYMBOLS_CONFIG: Dict[str, Dict[str, Any]] = {
         "min_lot": 0.001,
         "preferred_timeframes": ['M1', 'M5', 'M15'],
         "spread_limits": {
-            "max": 20.0,
-            "high": 10.0,
-            "normal": 5.0,
-            "ideal": 2.0
+            "max": 35.0,       # points (spread EURUSD typique XM: ~21 pts)
+            "high": 25.0,
+            "normal": 15.0,
+            "ideal": 8.0
         },
         "volatility_profile": "LOW",
         "trading_hours": "24/5"
@@ -77,10 +77,10 @@ SYMBOLS_CONFIG: Dict[str, Dict[str, Any]] = {
         "min_lot": 0.001,
         "preferred_timeframes": ['M1', 'M5', 'M15'],
         "spread_limits": {
-            "max": 25.0,
-            "high": 12.0,
-            "normal": 6.0,
-            "ideal": 3.0
+            "max": 50.0,       # points (spread USDJPY typique XM: ~30 pts)
+            "high": 35.0,
+            "normal": 20.0,
+            "ideal": 10.0
         },
         "volatility_profile": "LOW_MEDIUM",
         "trading_hours": "24/5"
@@ -92,10 +92,10 @@ SYMBOLS_CONFIG: Dict[str, Dict[str, Any]] = {
         "min_lot": 0.001,
         "preferred_timeframes": ['M5', 'M15', 'H1'],
         "spread_limits": {
-            "max": 25.0,
-            "high": 12.0,
-            "normal": 6.0,
-            "ideal": 3.0
+            "max": 40.0,       # points (spread GBPUSD typique XM: ~25 pts)
+            "high": 30.0,
+            "normal": 18.0,
+            "ideal": 10.0
         },
         "volatility_profile": "MEDIUM",
         "trading_hours": "24/5"
@@ -107,10 +107,10 @@ SYMBOLS_CONFIG: Dict[str, Dict[str, Any]] = {
         "min_lot": 0.001,
         "preferred_timeframes": ['M5', 'M15', 'H1'],
         "spread_limits": {
-            "max": 25.0,
-            "high": 12.0,
-            "normal": 6.0,
-            "ideal": 3.0
+            "max": 40.0,       # points (spread AUDUSD typique XM: ~24 pts)
+            "high": 30.0,
+            "normal": 18.0,
+            "ideal": 10.0
         },
         "volatility_profile": "MEDIUM",
         "trading_hours": "24/5"
@@ -122,10 +122,10 @@ SYMBOLS_CONFIG: Dict[str, Dict[str, Any]] = {
         "min_lot": 0.001,
         "preferred_timeframes": ['M15', 'H1', 'H4'],
         "spread_limits": {
-            "max": 30.0,
-            "high": 15.0,
-            "normal": 8.0,
-            "ideal": 4.0
+            "max": 45.0,       # points (spread NZDUSD typique XM: ~28 pts)
+            "high": 35.0,
+            "normal": 20.0,
+            "ideal": 10.0
         },
         "volatility_profile": "MEDIUM",
         "trading_hours": "24/5"
@@ -340,7 +340,7 @@ SECURITY_CONFIG: Dict[str, Any] = {
     "weekly_loss_limit": 10.0,
     "auto_stop_enabled": True,
     "connection_timeout": 10,
-    "request_timeout": 5
+    "request_timeout": 120
 }
 
 # AJOUTER ces paramètres

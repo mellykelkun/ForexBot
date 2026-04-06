@@ -520,7 +520,7 @@ class BTCUSDMicroScalperPro:
             resp = requests.post(
                 AI_DECISION_URL,
                 json=ai_payload,
-                timeout=max(self.request_timeout, 10),
+                timeout=max(self.request_timeout, 120),
             )
             if resp.status_code != 200:
                 logging.warning("⚠️ IA indisponible: %s", resp.text)
@@ -543,7 +543,7 @@ class BTCUSDMicroScalperPro:
                 resp = requests.post(
                     AI_DECISION_URL,
                     json=ai_payload,
-                    timeout=max(self.request_timeout, 10),
+                    timeout=max(self.request_timeout, 120),
                 )
                 if resp.status_code != 200:
                     logging.warning("⚠️ IA indisponible: %s", resp.text)
@@ -704,11 +704,15 @@ class BTCUSDMicroScalperPro:
             payload = self._build_payload(symbol)
             if not payload:
                 continue
+            payload_built_at = datetime.now()  # horodatage pour vérif fraîcheur
             symbol_info = mt5.symbol_info(symbol)
             if symbol_info and symbol_info.point:
                 spread_points = payload.get("extra", {}).get("spread_points")
                 if spread_points is not None:
-                    max_spread = self.max_spread_points
+                    # Utiliser le spread_limits par symbole si défini, sinon le global
+                    sym_cfg = SYMBOLS_CONFIG.get(symbol, {})
+                    sym_spread_max = sym_cfg.get("spread_limits", {}).get("max")
+                    max_spread = sym_spread_max if sym_spread_max is not None else self.max_spread_points
                     if spread_points > max_spread:
                         self.journal.log_event({
                             "type": "blocked",
@@ -730,6 +734,26 @@ class BTCUSDMicroScalperPro:
             decision = self._request_ai_decision(payload)
             if not decision:
                 continue
+
+            # ── Vérification fraîcheur : si l'IA a pris trop longtemps,
+            # les données du payload sont peut-être obsolètes ──
+            # Note : les indicateurs (RSI, EMA, tendance) ne changent pas
+            # significativement en <2min. Le prix d'exécution est recalculé
+            # en temps réel dans executer_trade() via mt5.symbol_info_tick().
+            payload_age = (datetime.now() - payload_built_at).total_seconds()
+            if payload_age > 120:
+                logging.warning(
+                    "⏰ Données obsolètes (%s): payload vieux de %.0fs (>120s), décision ignorée",
+                    symbol, payload_age,
+                )
+                self.journal.log_event({
+                    "type": "blocked",
+                    "symbol": symbol,
+                    "reason": "stale_payload",
+                    "payload_age_seconds": round(payload_age, 1),
+                })
+                continue
+
             action = decision.get("action")
             confidence = decision.get("confidence")
             if confidence is not None and confidence < self.required_confidence:

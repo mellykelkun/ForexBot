@@ -13,6 +13,7 @@ from backend.ai.base_provider import BaseAIProvider
 from backend.ai.groq_service import GroqService
 from backend.ai.openai_service import OpenAIService
 from backend.ai.deepseek_service import DeepSeekService
+from backend.ai.ollama_service import OllamaService
 
 
 class AIProviderManager:
@@ -28,6 +29,7 @@ class AIProviderManager:
             "groq": GroqService(),
             "openai": OpenAIService(),
             "deepseek": DeepSeekService(),
+            "ollama": OllamaService(),
         }
 
         # Provider actif (par défaut ou depuis .env)
@@ -109,7 +111,7 @@ class AIProviderManager:
         self,
         system_prompt: str,
         user_payload: Dict[str, Any],
-        timeout: int = 20,
+        timeout: int = 120,
         temperature: float = 0.2,
         max_tokens: int = 300,
     ) -> Optional[Dict[str, Any]]:

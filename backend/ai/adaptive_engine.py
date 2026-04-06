@@ -161,7 +161,7 @@ class AdaptiveAIEngine:
         result = self.provider_manager.chat_json(
             system_prompt=self.SYSTEM_PROMPT,
             user_payload=payload,
-            timeout=25,
+            timeout=120,
             max_tokens=400,
         )
 
@@ -273,7 +273,8 @@ def run_ai_server():
     print("=" * 50)
     try:
         from waitress import serve
-        serve(app, host="127.0.0.1", port=5003)
+        # channel_timeout élevé pour les modèles raisonneurs (Ollama/glm-5)
+        serve(app, host="127.0.0.1", port=5003, channel_timeout=180)
         return
     except Exception:
         pass
