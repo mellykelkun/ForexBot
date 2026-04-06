@@ -6,8 +6,10 @@ Sécurisé: écoute 127.0.0.1 uniquement + token API.
 """
 
 from datetime import datetime
+from typing import Any, Dict
 
 import logging
+import os
 from flask import Flask, jsonify, request
 
 from backend.ai.provider_manager import AIProviderManager
@@ -63,7 +65,14 @@ class AdaptiveAIEngine:
         "(stop_loss/take_profit/manual), type, volume, time.\n"
         "  - stats: total trades, wins, losses, win_rate_pct, net_pnl, avg_win, avg_loss, "
         "sl_hit_count, tp_hit_count, current_streak.\n"
-        "ANALYZE my_trade_history BEFORE making any decision.\n\n"
+        "ANALYZE my_trade_history BEFORE making any decision.\n"
+        "market_session: current trading session context with session name, time, "
+        "day_of_week, aggressivity multiplier, and whether the symbol is recommended "
+        "for this session. Use this to adjust your aggressivity.\n"
+        "raw_recent_candles: last 20 raw OHLCV candles per timeframe for direct price "
+        "action analysis.\n"
+        "indicator_series: last 10 values of RSI, EMA9, EMA21, MACD histogram, ATR "
+        "for each timeframe — use these to detect TRENDS and DIVERGENCES in indicators.\n\n"
 
         # ── Decision rules ──
         "== DECISION RULES ==\n"
@@ -142,7 +151,7 @@ class AdaptiveAIEngine:
         '"tp_price": number (only if BUY/SELL)}'
     )
 
-    def decide_autonomous(self, payload: dict) -> dict:
+    def decide_autonomous(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         provider = self.provider_manager.get_active()
         if not provider.is_configured():
             raise RuntimeError(
@@ -199,8 +208,8 @@ def api_providers():
 @require_api_token
 def api_switch_provider():
     """Change le provider IA actif en temps réel."""
-    data = request.get_json() or {}
-    provider_name = data.get("provider", "").strip()
+    data: Dict[str, Any] = request.get_json() or {}
+    provider_name = str(data.get("provider", "")).strip()
     if not provider_name:
         return jsonify({"success": False, "error": "Champ 'provider' requis"}), 400
     result = ai_engine.provider_manager.switch(provider_name)
@@ -215,17 +224,16 @@ def api_switch_provider():
 @require_api_token
 def decision_api():
     try:
-        payload = request.get_json() or {}
+        payload: Dict[str, Any] = request.get_json() or {}
         decision = ai_engine.decide_autonomous(payload)
-        if isinstance(decision, dict):
-            active = ai_engine.provider_manager.active_name
-            logger.info(
-                "IA decision | provider=%s | symbol=%s | action=%s | confidence=%s",
-                active,
-                payload.get("symbol"),
-                decision.get("action"),
-                decision.get("confidence"),
-            )
+        active = ai_engine.provider_manager.active_name
+        logger.info(
+            "IA decision | provider=%s | symbol=%s | action=%s | confidence=%s",
+            active,
+            payload.get("symbol"),
+            decision.get("action"),
+            decision.get("confidence"),
+        )
         return jsonify(decision)
     except Exception as e:
         return jsonify({"error": str(e)}), 503
@@ -239,6 +247,18 @@ def get_signal():
 @app.route("/api/analyze", methods=["POST"])
 def analyze_market_api():
     return jsonify({"error": "endpoint disabled"}), 410
+
+
+@app.route("/api/bot-health")
+def bot_health_check():
+    """Health check bidirectionnel — l'IA vérifie si le bot est vivant."""
+    import requests as _req
+    bot_url = os.getenv("BOT_HEALTH_URL", "http://127.0.0.1:5010/status")
+    try:
+        resp = _req.get(bot_url, timeout=3)
+        return jsonify({"bot_alive": resp.status_code == 200, "bot_status": resp.json()})
+    except Exception as e:
+        return jsonify({"bot_alive": False, "error": str(e)})
 
 
 def run_ai_server():

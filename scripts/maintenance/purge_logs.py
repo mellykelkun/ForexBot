@@ -4,6 +4,7 @@ et nettoyage automatique des vieux backups."""
 import os
 import shutil
 from datetime import datetime, timedelta
+from typing import Any, Dict, Optional
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -24,9 +25,9 @@ def _truncate(path: str) -> bool:
         return False
 
 
-def purge_all_logs() -> dict:
-    purged = []
-    failed = []
+def purge_all_logs() -> Dict[str, Any]:
+    purged: list[str] = []
+    failed: list[str] = []
 
     # Backup avant purge
     try:
@@ -72,12 +73,12 @@ def purge_all_logs() -> dict:
     }
 
 
-def cleanup_old_backups(retention_days: int = None) -> list:
+def cleanup_old_backups(retention_days: Optional[int] = None) -> list[str]:
     """Supprime les dossiers de backup plus vieux que retention_days."""
     if retention_days is None:
         retention_days = BACKUP_RETENTION_DAYS
 
-    removed = []
+    removed: list[str] = []
     if not os.path.isdir(BACKUP_DIR):
         return removed
 

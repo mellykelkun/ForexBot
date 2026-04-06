@@ -5,7 +5,7 @@ import os
 import secrets
 import shutil
 from datetime import datetime
-from typing import List
+from typing import Any, Dict, List
 
 import requests
 from flask import Flask, jsonify, request, render_template, redirect, url_for, session
@@ -25,7 +25,7 @@ app.secret_key = os.getenv("FLASK_SECRET_KEY") or os.getenv("DASHBOARD_SECRET") 
 LOG_DIR = "logs"
 ROOT_LOGS = ["process_manager.log", "bot_micro_scalper_v8_pro.log"]
 ALLOWED_SUFFIXES = (".log", ".json", ".jsonl")
-LAST_PURGE_TS: str | None = None
+_last_purge_ts: str | None = None
 
 
 def _tail_lines(path: str, limit: int = 200) -> List[str]:
@@ -36,9 +36,9 @@ def _tail_lines(path: str, limit: int = 200) -> List[str]:
     return [line.rstrip("\n") for line in lines[-limit:]]
 
 
-def _tail_jsonl(path: str, limit: int = 50) -> List[dict]:
+def _tail_jsonl(path: str, limit: int = 50) -> List[Dict[str, Any]]:
     lines = _tail_lines(path, limit)
-    out = []
+    out: List[Dict[str, Any]] = []
     for line in lines:
         try:
             out.append(json.loads(line))
@@ -56,9 +56,9 @@ def _truncate(path: str) -> bool:
         return False
 
 
-def _purge_all_logs() -> dict:
-    purged = []
-    failed = []
+def _purge_all_logs() -> Dict[str, Any]:
+    purged: list[str] = []
+    failed: list[str] = []
 
     # Backup rapide avant purge
     try:
@@ -123,8 +123,8 @@ def _human_size(num_bytes: int) -> str:
     return f"{size:.1f} TB"
 
 
-def _log_sizes() -> list[dict]:
-    items = []
+def _log_sizes() -> list[Dict[str, Any]]:
+    items: list[Dict[str, Any]] = []
     if os.path.isdir(LOG_DIR):
         for name in sorted(os.listdir(LOG_DIR)):
             if not name.lower().endswith(ALLOWED_SUFFIXES):
@@ -243,9 +243,9 @@ def api_control(action: str):
 @app.route("/api/purge-logs", methods=["POST"])
 @require_dashboard_auth
 def api_purge_logs():
-    global LAST_PURGE_TS
+    global _last_purge_ts
     result = _purge_all_logs()
-    LAST_PURGE_TS = result.get("timestamp")
+    _last_purge_ts = result.get("timestamp")
     return jsonify(result)
 
 
@@ -253,7 +253,7 @@ def api_purge_logs():
 @require_dashboard_auth
 def api_maintenance():
     return jsonify({
-        "last_purge": LAST_PURGE_TS,
+        "last_purge": _last_purge_ts,
         "log_sizes": _log_sizes(),
     })
 
@@ -262,7 +262,7 @@ def api_maintenance():
 @require_dashboard_auth
 def api_markets():
     data = _tail_jsonl(os.path.join("logs", "trade_journal.jsonl"), 500)
-    by_symbol: dict[str, dict] = {}
+    by_symbol: dict[str, Dict[str, Any]] = {}
     for item in data:
         symbol = item.get("symbol")
         if not symbol:
@@ -281,7 +281,7 @@ def api_markets():
             by_symbol[symbol]["last_reason"] = item.get("reason")
             by_symbol[symbol]["last_ts"] = item.get("timestamp")
         if item.get("type") == "decision":
-            decision = item.get("decision", {}) if isinstance(item.get("decision"), dict) else {}
+            decision: Dict[str, Any] = item.get("decision", {}) if isinstance(item.get("decision"), dict) else {}
             by_symbol[symbol]["last_action"] = decision.get("action")
             by_symbol[symbol]["last_confidence"] = decision.get("confidence")
             by_symbol[symbol]["last_price"] = decision.get("entry_price")
@@ -291,7 +291,7 @@ def api_markets():
 @app.route("/api/symbols")
 @require_dashboard_auth
 def api_symbols():
-    symbols = []
+    symbols: list[Dict[str, Any]] = []
     for name, cfg in SYMBOLS_CONFIG.items():
         symbols.append({
             "symbol": name,
@@ -321,7 +321,7 @@ def api_ai_provider_get():
 def api_ai_provider_switch():
     """Change le provider IA actif via l'AI Engine."""
     try:
-        data = request.get_json() or {}
+        data: Dict[str, Any] = request.get_json() or {}
         token = os.getenv("API_SECRET_TOKEN", "")
         resp = requests.post(
             f"{AI_ENGINE_URL}/api/switch-provider",
@@ -332,6 +332,65 @@ def api_ai_provider_switch():
         return jsonify(resp.json()), resp.status_code
     except Exception as e:
         return jsonify({"error": str(e)}), 503
+
+
+# ── Kill Switch / Emergency Stop ──────────────────────────────
+
+_risk_guardian_ref = None
+_position_monitor_ref = None
+
+
+def register_risk_guardian(guardian: Any, monitor: Any = None):
+    """Appelé au démarrage du bot pour enregistrer les références."""
+    global _risk_guardian_ref, _position_monitor_ref
+    _risk_guardian_ref = guardian
+    _position_monitor_ref = monitor
+
+
+@app.route("/api/emergency-stop", methods=["POST"])
+@require_dashboard_auth
+def api_emergency_stop():
+    """Kill switch d'urgence : ferme toutes les positions et bloque le trading."""
+    _body: Dict[str, Any] = request.get_json() or {}
+    reason = _body.get("reason", "Dashboard emergency stop")
+    closed = 0
+
+    # Fermer toutes les positions
+    if _position_monitor_ref:
+        closed = _position_monitor_ref.emergency_close_all(reason=reason)
+
+    # Activer le kill switch
+    if _risk_guardian_ref:
+        _risk_guardian_ref.activate_kill_switch(reason)
+
+    return jsonify({
+        "success": True,
+        "positions_closed": closed,
+        "kill_switch": True,
+        "reason": reason,
+    })
+
+
+@app.route("/api/kill-switch", methods=["POST"])
+@require_dashboard_auth
+def api_kill_switch_toggle():
+    """Active ou désactive le kill switch (sans fermer les positions)."""
+    data: Dict[str, Any] = request.get_json() or {}
+    activate = data.get("activate", True)
+
+    if not _risk_guardian_ref:
+        return jsonify({"error": "RiskGuardian non enregistré"}), 503
+
+    if activate:
+        reason = data.get("reason", "Manuel (dashboard)")
+        _risk_guardian_ref.activate_kill_switch(reason)
+    else:
+        _risk_guardian_ref.deactivate_kill_switch()
+
+    return jsonify({
+        "kill_switch": _risk_guardian_ref.is_kill_switch_active,
+        "reason": _risk_guardian_ref.kill_switch_reason,
+    })
 
 
 @app.route("/")

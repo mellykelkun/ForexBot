@@ -123,7 +123,7 @@ def cleanup_temp_files():
         try:
             os.remove(temp_file)
             print(f"🧹 Fichier temporaire: {temp_file}")
-        except:
+        except Exception:
             pass
 
 def check_system_health():
@@ -142,7 +142,7 @@ def check_system_health():
         disk_usage = shutil.disk_usage(".")
         free_gb = disk_usage.free / (1024**3)
         print(f"   💾 Espace disque libre: {free_gb:.1f} GB")
-    except:
+    except Exception:
         pass
 
 def recreate_database_if_corrupted():

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from backend.core import indicators as ind
 
@@ -124,7 +124,7 @@ def classify_momentum(
     elif stoch_k < stoch_d:
         stoch_cross = "BEARISH"
 
-    result = {
+    result: Dict[str, Any] = {
         "rsi": round(rsi, 2),
         "rsi_zone": rsi_zone,
         "macd_histogram": round(macd_hist, 6),
@@ -144,11 +144,11 @@ def classify_momentum(
 
 
 def compute_confluence_score(
-    trend: Dict, momentum: Dict, volatility: Dict,
+    trend: Dict[str, Any], momentum: Dict[str, Any], volatility: Dict[str, Any],
 ) -> Dict[str, Any]:
     """Score de confluence — combien d'indicateurs sont d'accord."""
-    bull_signals = 0
-    bear_signals = 0
+    bull_signals: int = 0
+    bear_signals: int = 0
 
     # Trend contribution
     if trend["direction"] == "BULLISH":
@@ -285,7 +285,63 @@ def build_timeframe_summary(
         },
         "market_regime": regime,
         "candle_patterns": patterns,
+        # Séries indicateurs récentes (dernières 10 valeurs) pour précision IA max
+        "indicator_series": _build_indicator_series(closes, highs, lows, volumes),
     }
+
+
+def _build_indicator_series(
+    closes: List[float], highs: List[float], lows: List[float], volumes: List[float],
+    lookback: int = 10,
+) -> Dict[str, Any]:
+    """Construit les séries récentes des indicateurs (dernières `lookback` valeurs).
+
+    Permet à l'IA de voir l'EVOLUTION récente des indicateurs, pas juste la
+    valeur ponctuelle.
+    """
+    result: Dict[str, Any] = {}
+    n = len(closes)
+    if n < lookback + 20:
+        return result
+
+    rsi_vals: list[float] = []
+    ema9_vals: list[float] = []
+    ema21_vals: list[float] = []
+    macd_hist_vals: list[float] = []
+    atr_vals: list[float] = []
+
+    for offset in range(lookback):
+        sub_c = closes[offset:]
+        sub_h = highs[offset:]
+        sub_l = lows[offset:]
+
+        r = ind.rsi_wilder(sub_c, 14)
+        if r is not None:
+            rsi_vals.append(round(r, 2))
+
+        e9 = ind.ema(sub_c, 9)
+        if e9 is not None:
+            ema9_vals.append(round(e9, 6))
+
+        e21 = ind.ema(sub_c, 21)
+        if e21 is not None:
+            ema21_vals.append(round(e21, 6))
+
+        md = ind.macd(sub_c)
+        if md:
+            macd_hist_vals.append(round(md.get("histogram", 0) or 0, 6))
+
+        a = ind.atr(sub_h, sub_l, sub_c, 14)
+        if a is not None:
+            atr_vals.append(round(a, 6))
+
+    result["rsi_last"] = rsi_vals
+    result["ema9_last"] = ema9_vals
+    result["ema21_last"] = ema21_vals
+    result["macd_hist_last"] = macd_hist_vals
+    result["atr_last"] = atr_vals
+
+    return result
 
 
 def build_smart_payload(
@@ -310,7 +366,7 @@ def build_smart_payload(
     Returns:
         Payload structuré et compressé sémantiquement.
     """
-    summaries = {}
+    summaries: Dict[str, Dict[str, Any]] = {}
     for tf_name, tf_data in timeframes_data.items():
         closes = tf_data.get("close", [])
         highs = tf_data.get("high", [])
@@ -324,7 +380,7 @@ def build_smart_payload(
     # Multi-timeframe synthesis
     mtf_synthesis = _synthesize_mtf(summaries)
 
-    payload = {
+    payload: Dict[str, Any] = {
         "symbol": symbol,
         "timestamp": datetime.now().isoformat(),
         "context": context,
@@ -396,7 +452,7 @@ def _synthesize_mtf(summaries: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
-def estimate_token_count(payload: Dict) -> int:
+def estimate_token_count(payload: Dict[str, Any]) -> int:
     """Estimation grossière du nombre de tokens du payload."""
     import json
     text = json.dumps(payload)

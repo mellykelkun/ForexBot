@@ -6,10 +6,10 @@ Avec gestion adaptative multi-pairs et multi-timeframes
 import os
 from datetime import datetime
 import json
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 # =============== CONFIGURATION MULTI-PAIRS & TIMEFRAMES ===============
-SYMBOLS_CONFIG = {
+SYMBOLS_CONFIG: Dict[str, Dict[str, Any]] = {
     "BTCUSD": {
         "enabled": True,
         "risk_multiplier": 1.0,
@@ -207,7 +207,7 @@ TIMEFRAMES_MT5 = {
 }
 
 # =============== CONFIGURATION DE BASE MULTI-PAIRS ===============
-MICRO_SCALPING_CONFIG = {
+MICRO_SCALPING_CONFIG: Dict[str, Any] = {
     "enabled": True,
     "capital_mini": 10.0,
     "capital_maxi": 35000.0,
@@ -233,7 +233,7 @@ MICRO_SCALPING_CONFIG = {
 }
 
 # =============== CONFIGURATION SESSIONS DE TRADING ===============
-TRADING_SESSIONS = {
+TRADING_SESSIONS: Dict[str, Dict[str, Any]] = {
     "ASIA": {
         "start": "00:00", "end": "08:00", 
         "active_symbols": ["USDJPY", "AUDUSD", "NZDUSD"],
@@ -334,7 +334,7 @@ AI_ADAPTIVE_CONFIG = {
 }
 
 # =============== CONFIGURATION SÉCURITÉ ===============
-SECURITY_CONFIG = {
+SECURITY_CONFIG: Dict[str, Any] = {
     "max_consecutive_losses": 5,
     "daily_loss_limit": 5.0,
     "weekly_loss_limit": 10.0,
@@ -404,8 +404,8 @@ INTELLIGENT_EXIT_CONFIG = {
 }
 
 # =============== CONFIGURATION GUARDIAN SYSTEM ===============
-GUARDIAN_SYSTEM_CONFIG = {
-    "enabled": False,
+GUARDIAN_SYSTEM_CONFIG: Dict[str, Any] = {
+    "enabled": True,
     "continuous_monitoring": True,
     
     # Surveillance multi-critères

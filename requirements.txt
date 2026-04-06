@@ -5,27 +5,27 @@ numpy>=2.0,<3
 ta-lib>=0.4.28,<1
 
 # WEB & DASHBOARD
-flask>=3.0,<4
-flask-socketio>=5.3,<6
-flask-cors>=4.0,<5
-python-socketio>=5.11,<6
+flask>=3.1,<4
+flask-socketio>=5.6,<6
+flask-cors>=6.0,<7
+python-socketio>=5.16,<6
 waitress>=3.0,<4
-requests>=2.32,<3
-pyjwt>=2.9,<3
+requests>=2.33,<3
+pyjwt>=2.12,<3
 
 # DATA & ANALYSIS
 scikit-learn>=1.5,<2
-plotly>=5.22,<6
+plotly>=6.0,<7
 
 # UTILITIES
 colorama>=0.4.6,<1
-psutil>=6.0,<7
-python-dotenv>=1.0,<2
+psutil>=7.0,<8
+python-dotenv>=1.2,<2
 schedule>=1.2,<2
-watchdog>=4,<5
+watchdog>=6.0,<7
 
 # DEVELOPMENT
-black>=24,<25
-pytest>=8,<9
-pylint>=3,<4
-mypy>=1.10,<2
+black>=26,<27
+pytest>=9,<10
+pylint>=4,<5
+mypy>=1.20,<2

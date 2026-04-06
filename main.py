@@ -17,7 +17,6 @@ from dotenv import load_dotenv
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from backend.utils import setup_global_logger, get_logger
-from backend.core import initialize_engine
 from backend.config import Config, INTELLIGENT_EXIT_CONFIG, GUARDIAN_SYSTEM_CONFIG
 
 def parse_arguments():

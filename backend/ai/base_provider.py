@@ -6,7 +6,7 @@ import json
 import logging
 import re
 import time
-from abc import ABC, abstractmethod
+from abc import ABC
 from typing import Any, Dict, Optional
 
 import requests
@@ -88,7 +88,7 @@ class BaseAIProvider(ABC):
                 if response.status_code != 200:
                     # Retry sans response_format si JSON échoue
                     if "json_validate_failed" in response.text and self.supports_json_mode:
-                        payload_no_format = {
+                        payload_no_format: Dict[str, Any] = {
                             **payload,
                             "messages": [
                                 {

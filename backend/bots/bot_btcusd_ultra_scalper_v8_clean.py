@@ -11,19 +11,19 @@ import os
 import shutil
 import time
 from decimal import Decimal, ROUND_DOWN
-from collections import deque
-from datetime import datetime, timedelta
-from typing import Any, Dict, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, Optional, cast
 
 import MetaTrader5 as mt5
 import requests
 from requests import exceptions as req_exc
 
-from backend.utils import get_logger
 from backend.config.config_micro_scalping_pro import (
     SYMBOLS_CONFIG,
     MICRO_SCALPING_CONFIG,
     SECURITY_CONFIG,
+    TRADING_SESSIONS,
+    CRYPTO_SYMBOLS,
 )
 from backend.core import indicators as ind
 from backend.core.risk_guardian import RiskGuardian
@@ -31,20 +31,22 @@ from backend.core.smart_payload import build_smart_payload, estimate_token_count
 
 import numpy as _np
 
-def _sanitize_for_json(obj):
+def _sanitize_for_json(obj: Any) -> Any:
     """Convertit récursivement les types numpy en types Python natifs pour JSON."""
     if isinstance(obj, dict):
-        return {k: _sanitize_for_json(v) for k, v in obj.items()}
+        d = cast(Dict[str, Any], obj)
+        return {str(k): _sanitize_for_json(v) for k, v in d.items()}
     if isinstance(obj, (list, tuple)):
-        return [_sanitize_for_json(v) for v in obj]
-    if isinstance(obj, (_np.bool_,)):
-        return bool(obj)
-    if isinstance(obj, (_np.integer,)):
-        return int(obj)
-    if isinstance(obj, (_np.floating,)):
-        return float(obj)
+        items: list[Any] = [x for x in obj]  # type: ignore[unknown-type]
+        return [_sanitize_for_json(v) for v in items]
+    if isinstance(obj, _np.bool_):
+        return bool(obj)  # type: ignore[arg-type]
+    if isinstance(obj, _np.integer):
+        return int(obj.item())
+    if isinstance(obj, _np.floating):
+        return float(obj.item())
     if isinstance(obj, _np.ndarray):
-        return obj.tolist()
+        return cast(list[Any], obj.tolist())
     return obj
 from backend.core.position_monitor import PositionMonitor
 
@@ -52,21 +54,21 @@ from backend.core.position_monitor import PositionMonitor
 AI_DECISION_URL = os.getenv("AI_ENGINE_URL", "http://127.0.0.1:5003/api/decision")
 AI_HEALTH_URL = os.getenv("AI_ENGINE_HEALTH_URL", "http://127.0.0.1:5003/health")
 
-def _env_int(name: str, default: int) -> int:
+def _env_int(name: str, default: Any) -> int:
     try:
         return int(os.getenv(name, str(default)))
     except Exception:
         return default
 
 
-def _env_float(name: str, default: float) -> float:
+def _env_float(name: str, default: Any) -> float:
     try:
         return float(os.getenv(name, str(default)))
     except Exception:
         return default
 
 
-DEFAULT_RISK = {
+DEFAULT_RISK: Dict[str, Any] = {
     "max_trades_per_hour": _env_int("MAX_TRADES_PER_HOUR", 6),
     "max_trades_per_day": _env_int("MAX_TRADES_PER_DAY", 60),
     "min_seconds_between_trades": _env_int("MIN_SECONDS_BETWEEN_TRADES", 15),
@@ -104,7 +106,7 @@ class TradeJournal:
             return ""
 
     def log_event(self, event: Dict[str, Any]):
-        payload = {"timestamp": datetime.utcnow().isoformat(), **event, "prev_hash": self.last_hash}
+        payload: Dict[str, Any] = {"timestamp": datetime.now(timezone.utc).isoformat(), **event, "prev_hash": self.last_hash}
         raw = json.dumps(payload, sort_keys=True, ensure_ascii=False)
         digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
         payload["hash"] = digest
@@ -185,6 +187,12 @@ class BTCUSDMicroScalperPro:
             get_decision_func=self._request_ai_decision,
             check_interval=30.0,
         )
+        # Enregistrer le RiskGuardian et PositionMonitor dans le dashboard
+        try:
+            from backend.dashboard_app import register_risk_guardian
+            register_risk_guardian(self.risk_guardian, self.position_monitor)
+        except Exception:
+            pass
         self.daily_start_balance = self.account.balance
         self.daily_start_date = datetime.now().strftime("%Y-%m-%d")
         logging.info("✅ MT5 initialisé | Mode réel: %s", self.real_trading)
@@ -211,7 +219,7 @@ class BTCUSDMicroScalperPro:
 
     # ── Indicateurs déplacés → backend.core.indicators (corrigés Wilder/chrono) ──
 
-    def _get_market_data(self, symbol: str, timeframe, bars: int = 200) -> Optional[Dict[str, list]]:
+    def _get_market_data(self, symbol: str, timeframe: int, bars: int = 200) -> Optional[Dict[str, list[float]]]:
         """Récupère les données de marché depuis MT5 et retourne les séries OHLCV."""
         rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, bars)
         if rates is None or len(rates) < 30:
@@ -257,7 +265,7 @@ class BTCUSDMicroScalperPro:
 
         return float(normalized)
 
-    def _get_recent_trade_history(self, symbol: str, max_trades: int = 10) -> list:
+    def _get_recent_trade_history(self, symbol: str, max_trades: int = 10) -> list[Dict[str, Any]]:
         """
         Récupère les N derniers trades fermés depuis MT5 pour ce symbole.
         Retourne une liste de résumés (profit, raison de clôture, etc.)
@@ -272,7 +280,7 @@ class BTCUSDMicroScalperPro:
                 return []
 
             # Filtrer uniquement les clôtures (DEAL_ENTRY_OUT=1) et prendre les plus récents
-            closed_trades = []
+            closed_trades: list[Dict[str, Any]] = []
             for deal in deals:
                 if deal.entry != 1:  # 1 = DEAL_ENTRY_OUT (fermeture)
                     continue
@@ -307,7 +315,7 @@ class BTCUSDMicroScalperPro:
             logging.warning("⚠️ Impossible de récupérer l'historique trades: %s", e)
             return []
 
-    def _build_trade_performance_summary(self, symbol: str) -> dict:
+    def _build_trade_performance_summary(self, symbol: str) -> Dict[str, Any]:
         """
         Construit un résumé de performance que l'IA peut utiliser pour
         s'auto-évaluer et apprendre de ses erreurs.
@@ -338,7 +346,7 @@ class BTCUSDMicroScalperPro:
             else:
                 break
 
-        stats = {
+        stats: Dict[str, Any] = {
             "total": total,
             "wins": len(wins),
             "losses": len(losses),
@@ -371,15 +379,15 @@ class BTCUSDMicroScalperPro:
         if symbol_info and symbol_info.point:
             spread_points = tick["spread"] / symbol_info.point
 
-        # Récupérer données multi-timeframe (barres réduites vs avant)
+        # Récupérer données multi-timeframe (barres complètes pour max de précision IA)
         tf_map = {
-            "M1":  (mt5.TIMEFRAME_M1,  min(self.bars_m1, 200)),
-            "M5":  (mt5.TIMEFRAME_M5,  min(self.bars_m5, 200)),
-            "H1":  (mt5.TIMEFRAME_H1,  min(self.bars_h1, 500)),
-            "H4":  (mt5.TIMEFRAME_H4,  min(self.bars_h4, 300)),
-            "D1":  (mt5.TIMEFRAME_D1,  min(self.bars_d1, 200)),
+            "M1":  (mt5.TIMEFRAME_M1,  self.bars_m1),
+            "M5":  (mt5.TIMEFRAME_M5,  self.bars_m5),
+            "H1":  (mt5.TIMEFRAME_H1,  self.bars_h1),
+            "H4":  (mt5.TIMEFRAME_H4,  self.bars_h4),
+            "D1":  (mt5.TIMEFRAME_D1,  self.bars_d1),
         }
-        timeframes_data = {}
+        timeframes_data: Dict[str, Dict[str, list[float]]] = {}
         atr_m1 = None
         for tf_name, (tf_const, bars_count) in tf_map.items():
             data = self._get_market_data(symbol, tf_const, bars_count)
@@ -396,10 +404,12 @@ class BTCUSDMicroScalperPro:
         account_info = mt5.account_info()
         balance = account_info.balance if account_info else 0.0
         equity = account_info.equity if account_info else 0.0
+        if not self.risk_guardian:
+            return None
         risk_state = self.risk_guardian.get_risk_state(datetime.now(), balance, equity)
 
         # Positions ouvertes
-        open_positions = []
+        open_positions: list[Dict[str, Any]] = []
         try:
             positions = mt5.positions_get(symbol=symbol)
             if positions:
@@ -445,13 +455,56 @@ class BTCUSDMicroScalperPro:
         except Exception as e:
             logging.warning("⚠️ Historique performance non disponible: %s", e)
 
+        # ── Contexte de session de marché ──
+        payload["market_session"] = self._get_current_session(symbol)
+
+        # ── Données brutes récentes pour chaque timeframe (dernières 20 bougies) ──
+        raw_data = {}
+        for tf_name, tf_data in timeframes_data.items():
+            raw_data[tf_name] = {
+                "close": [round(v, 6) for v in tf_data.get("close", [])[:20]],
+                "high": [round(v, 6) for v in tf_data.get("high", [])[:20]],
+                "low": [round(v, 6) for v in tf_data.get("low", [])[:20]],
+                "open": [round(v, 6) for v in tf_data.get("open", [])[:20]],
+                "volume": tf_data.get("volume", [])[:20],
+            }
+        payload["raw_recent_candles"] = raw_data
+
         # Stocker l'ATR pour le fallback SL/TP
         payload["_atr_m1"] = atr_m1
         payload["_symbol_point"] = symbol_info.point if symbol_info else 0.00001
 
         return payload
 
+    def _get_current_session(self, symbol: str) -> Dict[str, Any]:
+        """Identifie la session de marché active et retourne le contexte."""
+        now = datetime.now()
+        current_time = now.strftime("%H:%M")
+        active_session = "OFF_HOURS"
+        session_aggressivity = 1.0
+        is_recommended = True
+
+        for session_name, session_cfg in TRADING_SESSIONS.items():
+            start = session_cfg["start"]
+            end = session_cfg["end"]
+            if start <= current_time < end:
+                active_session = session_name
+                session_aggressivity = session_cfg.get("aggressivity", 1.0)
+                recommended_symbols = session_cfg.get("active_symbols", [])
+                is_recommended = symbol in recommended_symbols or symbol in CRYPTO_SYMBOLS
+                break
+
+        return {
+            "session": active_session,
+            "time": current_time,
+            "day_of_week": now.strftime("%A"),
+            "aggressivity": session_aggressivity,
+            "symbol_recommended_for_session": is_recommended,
+            "is_crypto": symbol in CRYPTO_SYMBOLS,
+        }
+
     def _request_ai_decision(self, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        ai_payload: Dict[str, Any] = {}
         try:
             payload = _sanitize_for_json(payload)
             # Retirer les champs internes (préfixés _) avant envoi à l'IA
@@ -459,7 +512,7 @@ class BTCUSDMicroScalperPro:
             try:
                 payload_size = len(json.dumps(ai_payload, ensure_ascii=False))
                 try:
-                    get_logger().info(f"📦 Payload IA {ai_payload.get('symbol')}: {payload_size} bytes")
+                    logging.info(f"📦 Payload IA {ai_payload.get('symbol')}: {payload_size} bytes")
                 except Exception:
                     logging.info("📦 Payload IA %s: %s bytes", ai_payload.get("symbol"), payload_size)
             except Exception:
@@ -478,11 +531,12 @@ class BTCUSDMicroScalperPro:
             data = resp.json()
             if not isinstance(data, dict):
                 return None
-            self.last_ai_decision = data
+            result = cast(Dict[str, Any], data)
+            self.last_ai_decision = result
             self.last_ai_time = datetime.now()
             self.last_ai_error = None
             self.ai_error_streak = 0
-            return data
+            return result
         except req_exc.ReadTimeout:
             try:
                 time.sleep(0.5)
@@ -500,11 +554,12 @@ class BTCUSDMicroScalperPro:
                 data = resp.json()
                 if not isinstance(data, dict):
                     return None
-                self.last_ai_decision = data
+                result2 = cast(Dict[str, Any], data)
+                self.last_ai_decision = result2
                 self.last_ai_time = datetime.now()
                 self.last_ai_error = None
                 self.ai_error_streak = 0
-                return data
+                return result2
             except Exception as e:
                 logging.warning("⚠️ Erreur IA: %s", e)
                 self.last_ai_error = str(e)
@@ -576,7 +631,7 @@ class BTCUSDMicroScalperPro:
 
         self.backup_last_run = now
 
-    def _cleanup_old_backups(self, max_age_days: int = None):
+    def _cleanup_old_backups(self, max_age_days: Optional[int] = None):
         """Supprime les dossiers de backup plus vieux que max_age_days (défaut: BACKUP_RETENTION_DAYS)."""
         if max_age_days is None:
             max_age_days = int(os.getenv("BACKUP_RETENTION_DAYS", "7"))
@@ -687,6 +742,42 @@ class BTCUSDMicroScalperPro:
                 })
                 logging.info("ℹ️ Signal ignoré (confidence %.2f < %.2f)", confidence, self.required_confidence)
                 continue
+
+            # ── Filtre post-IA : validation croisée avec indicateurs locaux ──
+            if action in ("BUY", "SELL"):
+                mtf = payload.get("multi_timeframe", {})
+                m5_data = mtf.get("M5", {})
+                m5_mom = m5_data.get("momentum", {})
+                m5_rsi = m5_mom.get("rsi", 50)
+
+                # Bloquer BUY si RSI M5 en surachat extrême (>85)
+                if action == "BUY" and m5_rsi > 85:
+                    self.journal.log_event({
+                        "type": "blocked", "symbol": symbol,
+                        "reason": "post_ia_rsi_overbought", "rsi": m5_rsi,
+                    })
+                    logging.warning("🛡️ Post-IA bloqué: BUY rejeté (RSI M5=%.1f > 85)", m5_rsi)
+                    continue
+
+                # Bloquer SELL si RSI M5 en survente extrême (<15)
+                if action == "SELL" and m5_rsi < 15:
+                    self.journal.log_event({
+                        "type": "blocked", "symbol": symbol,
+                        "reason": "post_ia_rsi_oversold", "rsi": m5_rsi,
+                    })
+                    logging.warning("🛡️ Post-IA bloqué: SELL rejeté (RSI M5=%.1f < 15)", m5_rsi)
+                    continue
+
+                # Bloquer si volatilité extrême (squeeze → breakout imminent, direction incertaine)
+                m5_vol = m5_data.get("volatility", {})
+                if m5_vol.get("regime") == "EXTREME":
+                    self.journal.log_event({
+                        "type": "blocked", "symbol": symbol,
+                        "reason": "post_ia_extreme_volatility",
+                    })
+                    logging.warning("🛡️ Post-IA bloqué: volatilité EXTREME sur M5")
+                    continue
+
             if action in ("BUY", "SELL"):
                 self.journal.log_event({"type": "decision", "symbol": symbol, "decision": decision})
                 decision["symbol"] = symbol
@@ -768,7 +859,7 @@ class BTCUSDMicroScalperPro:
             volume_step=symbol_info.volume_step if symbol_info else 0.01,
             risk_multiplier=risk_mult,
         )
-        volume = self._normalize_volume(symbol_info, desired_volume)
+        volume = self._normalize_volume(symbol_info, desired_volume) if symbol_info else None
         if volume is None:
             logging.error("❌ Volume invalide pour %s (demandé=%.6f)", symbol, desired_volume)
             self.journal.log_event({
@@ -820,7 +911,7 @@ class BTCUSDMicroScalperPro:
         logging.info("📤 Ordre %s %s: vol=%.4f, prix=%.5f, SL=%.5f, TP=%.5f, stops_level=%d",
                       action, symbol, volume, price, sl, tp, int(stops_level))
 
-        request = {
+        request: Dict[str, Any] = {
             "action": mt5.TRADE_ACTION_DEAL,
             "symbol": symbol,
             "volume": volume,
@@ -880,9 +971,11 @@ class BTCUSDMicroScalperPro:
             logging.info("💤 Mode dormant activé (inactivité prolongée)")
         time.sleep(self.dormant_sleep_seconds)
 
-    def run_backtest(self, symbol: str = "BTCUSD", timeframe=mt5.TIMEFRAME_M1, bars: int = 500):
+    def run_backtest(self, symbol: str = "BTCUSD", timeframe: int = mt5.TIMEFRAME_M1, bars: int = 500):
+        """Backtest local — utilise une heuristique basée sur les indicateurs,
+        PAS l'API IA réelle (économie d'appels + rapidité)."""
         rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, bars)
-        if rates is None or len(rates) < 10:
+        if rates is None or len(rates) < 50:
             logging.error("❌ Données insuffisantes pour backtest")
             return
 
@@ -892,33 +985,46 @@ class BTCUSDMicroScalperPro:
         slippage_points = DEFAULT_RISK["simulated_slippage_points"]
         volume = SYMBOLS_CONFIG.get(symbol, {}).get("min_lot", 0.01)
 
+        # Préparer les données chronologiques une seule fois
+        closes = [r["close"] for r in rates]
+        highs = [r["high"] for r in rates]
+        lows = [r["low"] for r in rates]
+
         pnl = 0.0
         trades = 0
         wins = 0
 
-        for i in range(1, len(rates)):
-            bar = rates[i]
-            payload = {
-                "context": "entry",
-                "symbol": symbol,
-                "bid": bar["close"],
-                "ask": bar["close"],
-                "spread": 0,
-                "volume": bar["tick_volume"],
-                "timestamp": datetime.fromtimestamp(bar["time"]).isoformat(),
-                "risk": MICRO_SCALPING_CONFIG.get("risk_per_trade", 0.5),
-            }
-            decision = self._request_ai_decision(payload)
-            if not decision or decision.get("action") not in ("BUY", "SELL"):
+        for i in range(50, len(rates) - 1):
+            # Sous-série de données pour les indicateurs (fenêtre glissante)
+            sub_closes = closes[max(0, i - 200):i + 1]
+            _sub_highs = highs[max(0, i - 200):i + 1]
+            _sub_lows = lows[max(0, i - 200):i + 1]
+
+            # Calculer les indicateurs locaux
+            rsi = ind.rsi_wilder(sub_closes[::-1], 14) or 50
+            ema_fast = ind.ema(sub_closes[::-1], 9) or sub_closes[-1]
+            ema_slow = ind.ema(sub_closes[::-1], 21) or sub_closes[-1]
+            macd_data = ind.macd(sub_closes[::-1])
+            macd_hist = macd_data.get("histogram", 0) or 0
+
+            # Heuristique locale simple
+            action = None
+            if ema_fast > ema_slow and macd_hist > 0 and 30 < rsi < 65:
+                action = "BUY"
+            elif ema_fast < ema_slow and macd_hist < 0 and 35 < rsi < 70:
+                action = "SELL"
+
+            if not action:
                 continue
 
-            next_bar = rates[i + 1] if i + 1 < len(rates) else bar
+            bar = rates[i]
+            next_bar = rates[i + 1]
             spread_points = float(bar["spread"]) if "spread" in bar.dtype.names else 0.0
             spread = spread_points * point
             entry_mid = bar["close"]
             exit_mid = next_bar["close"]
 
-            if decision.get("action") == "BUY":
+            if action == "BUY":
                 entry = entry_mid + (spread / 2) + (slippage_points * point)
                 exit_price = exit_mid - (spread / 2) - (slippage_points * point)
                 trade_pnl = exit_price - entry
@@ -935,7 +1041,7 @@ class BTCUSDMicroScalperPro:
                 wins += 1
 
         win_rate = (wins / trades * 100) if trades else 0
-        logging.info("📊 BACKTEST: trades=%s win_rate=%.1f%% pnl=%.5f", trades, win_rate, pnl)
+        logging.info("📊 BACKTEST LOCAL: trades=%s win_rate=%.1f%% pnl=%.5f", trades, win_rate, pnl)
 
     def perform_health_check(self) -> bool:
         try:

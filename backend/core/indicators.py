@@ -9,7 +9,7 @@ quand le calcul l'exige (EMA, RSI Wilder, MACD, ADX…).
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, cast
 import math
 
 
@@ -51,7 +51,7 @@ def ema_series(values: List[float], period: int) -> List[float]:
         return []
     c = _to_chrono(values)
     k = 2.0 / (period + 1)
-    result = []
+    result: list[float] = []
     ema_val = sum(c[:period]) / period
     result.append(ema_val)
     for v in c[period:]:
@@ -652,11 +652,15 @@ def detect_market_regime(
 
     # Bollinger width
     if bb_data and bb_data.get("upper") and bb_data.get("lower") and bb_data.get("mid"):
-        bb_width = (bb_data["upper"] - bb_data["lower"]) / bb_data["mid"]
-        if bb_width > 0.04:
-            return "HIGH_VOLATILITY"
-        elif bb_width < 0.01:
-            return "LOW_VOLATILITY"
+        upper = bb_data["upper"]
+        lower = bb_data["lower"]
+        mid = bb_data["mid"]
+        if upper is not None and lower is not None and mid is not None and mid != 0:
+            bb_width = (upper - lower) / mid
+            if bb_width > 0.04:
+                return "HIGH_VOLATILITY"
+            elif bb_width < 0.01:
+                return "LOW_VOLATILITY"
 
     return "RANGING"
 
@@ -688,13 +692,15 @@ def confluence_score(indicators: Dict[str, Any]) -> Dict[str, float]:
             bearish += 0.5
 
     # MACD
-    macd_data = indicators.get("macd")
-    if isinstance(macd_data, dict) and macd_data.get("hist") is not None:
-        count += 1
-        if macd_data["hist"] > 0:
-            bullish += 0.8
-        else:
-            bearish += 0.8
+    _macd_raw = indicators.get("macd")
+    if isinstance(_macd_raw, dict):
+        macd_data = cast(Dict[str, Any], _macd_raw)
+        if macd_data.get("hist") is not None:
+            count += 1
+            if macd_data["hist"] > 0:
+                bullish += 0.8
+            else:
+                bearish += 0.8
 
     # EMA cross
     ema_fast = indicators.get("ema_9")
@@ -707,23 +713,27 @@ def confluence_score(indicators: Dict[str, Any]) -> Dict[str, float]:
             bearish += 0.7
 
     # Stochastic
-    stoch = indicators.get("stoch")
-    if isinstance(stoch, dict) and stoch.get("k") is not None:
-        count += 1
-        if stoch["k"] < 20:
-            bullish += 0.6
-        elif stoch["k"] > 80:
-            bearish += 0.6
+    _stoch_raw = indicators.get("stoch")
+    if isinstance(_stoch_raw, dict):
+        stoch = cast(Dict[str, Any], _stoch_raw)
+        if stoch.get("k") is not None:
+            count += 1
+            if stoch["k"] < 20:
+                bullish += 0.6
+            elif stoch["k"] > 80:
+                bearish += 0.6
 
     # ADX trend
-    adx_data = indicators.get("adx_14")
-    if isinstance(adx_data, dict) and adx_data.get("adx") is not None:
-        if adx_data["adx"] > 25:
-            count += 1
-            if adx_data.get("plus_di", 0) > adx_data.get("minus_di", 0):
-                bullish += 0.9
-            else:
-                bearish += 0.9
+    _adx_raw = indicators.get("adx_14")
+    if isinstance(_adx_raw, dict):
+        adx_data = cast(Dict[str, Any], _adx_raw)
+        if adx_data.get("adx") is not None:
+            if adx_data["adx"] > 25:
+                count += 1
+                if adx_data.get("plus_di", 0) > adx_data.get("minus_di", 0):
+                    bullish += 0.9
+                else:
+                    bearish += 0.9
 
     total = max(count, 1)
     return {

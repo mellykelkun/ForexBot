@@ -14,12 +14,10 @@ Fonctionnalités :
 from __future__ import annotations
 
 import logging
-import os
 import threading
-import time
 from collections import deque
-from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from datetime import datetime
+from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger("RiskGuardian")
 
@@ -49,7 +47,7 @@ class RiskGuardian:
         self.risk_per_trade_pct: float = float(cfg.get("risk_per_trade", 0.5))
 
         # État
-        self.trade_times: deque = deque(maxlen=2000)
+        self.trade_times: deque[datetime] = deque(maxlen=2000)
         self.last_trade_time: Optional[datetime] = None
         self.daily_start_balance: float = starting_balance
         self.daily_start_date: str = datetime.now().strftime("%Y-%m-%d")

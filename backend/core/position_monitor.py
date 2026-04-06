@@ -16,7 +16,7 @@ import logging
 import threading
 import time
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger("PositionMonitor")
 
@@ -26,8 +26,8 @@ class PositionMonitor:
 
     def __init__(
         self,
-        mt5_api,
-        get_decision_func: Callable,
+        mt5_api: Any,
+        get_decision_func: Callable[..., Any],
         check_interval: float = 30.0,
         trailing_stop_atr_mult: float = 1.0,
         breakeven_trigger_atr: float = 1.5,
@@ -98,16 +98,16 @@ class PositionMonitor:
                 ticket = getattr(pos, "ticket", "?")
                 logger.error("Erreur évaluation position %s: %s", ticket, e)
 
-    def _evaluate_position(self, position):
+    def _evaluate_position(self, position: Any):
         """Évalue une position individuelle."""
         ticket = position.ticket
         symbol = position.symbol
         pos_type = "BUY" if position.type == 0 else "SELL"
-        volume = position.volume
+        _volume = position.volume
         price_open = position.price_open
         current_price = position.price_current
         sl = position.sl
-        tp = position.tp
+        _tp = position.tp
         profit = position.profit
         time_open = position.time
 
@@ -148,7 +148,7 @@ class PositionMonitor:
         )
 
     def _check_breakeven(
-        self, position, pos_type: str, entry: float,
+        self, position: Any, pos_type: str, entry: float,
         current: float, sl: float, atr: float, point: float,
     ):
         """Active le breakeven si le prix a bougé de breakeven_trigger_atr * ATR."""
@@ -170,7 +170,7 @@ class PositionMonitor:
                 )
 
     def _check_trailing_stop(
-        self, position, pos_type: str, current: float, sl: float, atr: float,
+        self, position: Any, pos_type: str, current: float, sl: float, atr: float,
     ):
         """Trailing stop basé sur l'ATR."""
         trail_dist = atr * self.trailing_stop_atr_mult
@@ -192,12 +192,12 @@ class PositionMonitor:
                     position.ticket, ideal_sl, sl - ideal_sl,
                 )
 
-    def _modify_sl(self, position, new_sl: float):
+    def _modify_sl(self, position: Any, new_sl: float):
         """Modifie le SL d'une position via MT5."""
         try:
             import MetaTrader5 as mt5
 
-            request = {
+            request: Dict[str, Any] = {
                 "action": mt5.TRADE_ACTION_SLTP,
                 "position": position.ticket,
                 "symbol": position.symbol,
@@ -229,9 +229,12 @@ class PositionMonitor:
                 try:
                     pos_type = mt5.ORDER_TYPE_SELL if pos.type == 0 else mt5.ORDER_TYPE_BUY
                     price = mt5.symbol_info_tick(pos.symbol)
+                    if not price:
+                        logger.warning("⚠️ Impossible d'obtenir le tick pour %s", pos.symbol)
+                        continue
                     close_price = price.bid if pos.type == 0 else price.ask
 
-                    request = {
+                    request: Dict[str, Any] = {
                         "action": mt5.TRADE_ACTION_DEAL,
                         "symbol": pos.symbol,
                         "volume": pos.volume,

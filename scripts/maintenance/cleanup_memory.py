@@ -41,7 +41,7 @@ def emergency_memory_cleanup():
         try:
             tf.keras.backend.clear_session()
             print("   ✅ TensorFlow nettoyé")
-        except:
+        except Exception:
             print("   ❌ Erreur nettoyage TensorFlow")
     else:
         print("   ℹ️ TensorFlow non installé")
@@ -53,7 +53,7 @@ def emergency_memory_cleanup():
         try:
             plt.close('all')
             print("   ✅ Matplotlib nettoyé")
-        except:
+        except Exception:
             print("   ❌ Erreur nettoyage matplotlib")
     else:
         print("   ℹ️ Matplotlib non installé")
@@ -87,7 +87,7 @@ def emergency_memory_cleanup():
         # Forcer la libération mémoire
         if hasattr(gc, 'get_referrers'):
             gc.collect()
-    except:
+    except Exception:
         pass
     
     # Résultats

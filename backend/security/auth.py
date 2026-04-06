@@ -16,9 +16,9 @@ import hmac
 import os
 import secrets
 from functools import wraps
-from typing import Optional
+from typing import Any, Callable, Optional
 
-from flask import request, redirect, url_for, session, jsonify, abort
+from flask import request, redirect, url_for, session, jsonify
 from dotenv import load_dotenv, set_key
 
 load_dotenv()
@@ -47,26 +47,26 @@ def verify_key(raw_key: str, stored_hash: str) -> bool:
 # .env helpers
 # ---------------------------------------------------------------------------
 
-_ENV_PATH: Optional[str] = None
+_env_path_cache: Optional[str] = None
 
 
 def _env_path() -> str:
-    global _ENV_PATH
-    if _ENV_PATH is None:
+    global _env_path_cache
+    if _env_path_cache is None:
         # Walk up from this file to find .env
         d = os.path.dirname(os.path.abspath(__file__))
         for _ in range(5):
             candidate = os.path.join(d, ".env")
             if os.path.exists(candidate):
-                _ENV_PATH = candidate
-                return _ENV_PATH
+                _env_path_cache = candidate
+                return _env_path_cache
             d = os.path.dirname(d)
         # Fallback: project root
-        _ENV_PATH = os.path.join(
+        _env_path_cache = os.path.join(
             os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
             ".env",
         )
-    return _ENV_PATH
+    return _env_path_cache
 
 
 def get_or_create_api_token() -> str:
@@ -92,11 +92,11 @@ def get_access_key_hash() -> Optional[str]:
 # Flask decorators
 # ---------------------------------------------------------------------------
 
-def require_dashboard_auth(f):
+def require_dashboard_auth(f: Callable[..., Any]) -> Callable[..., Any]:
     """Decorator: protect dashboard routes with access-key session."""
 
     @wraps(f)
-    def decorated(*args, **kwargs):
+    def decorated(*args: Any, **kwargs: Any) -> Any:
         stored_hash = get_access_key_hash()
         # If no key configured yet, allow access (first-run)
         if not stored_hash:
@@ -110,11 +110,11 @@ def require_dashboard_auth(f):
     return decorated
 
 
-def require_api_token(f):
+def require_api_token(f: Callable[..., Any]) -> Callable[..., Any]:
     """Decorator: protect API routes with X-API-Token header."""
 
     @wraps(f)
-    def decorated(*args, **kwargs):
+    def decorated(*args: Any, **kwargs: Any) -> Any:
         token = get_or_create_api_token()
         provided = request.headers.get("X-API-Token", "")
         if not provided or not hmac.compare_digest(provided, token):

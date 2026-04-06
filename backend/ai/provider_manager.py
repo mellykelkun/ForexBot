@@ -86,7 +86,7 @@ class AIProviderManager:
         with self._lock:
             active = self._active_name
 
-        result = []
+        result: List[Dict[str, Any]] = []
         for name, provider in self._providers.items():
             info = provider.info()
             info["active"] = (name == active)
